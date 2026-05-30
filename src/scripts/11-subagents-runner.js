@@ -1807,6 +1807,10 @@ When finished, you MUST call finish_task with status="success" only if the reque
 
       let response;
       let retries = 0;
+      // Local Ollama: try the native /api/chat first (only endpoint that honors num_ctx),
+      // but fall back to the OpenAI-compatible endpoint if native rejects/fails the request
+      // so a subagent always runs even if a model/version is picky about the native API.
+      let ollamaLocalUseNative = true;
       while (true) {
         let isGemini = subagentProvider === 'gemini';
         let endpointUrl = '';
@@ -1863,13 +1867,20 @@ When finished, you MUST call finish_task with status="success" only if the reque
             payload.model = subagentModel || 'deepseek-v3.1:671b-cloud';
           } else if (subagentProvider === 'ollama_local') {
             if (!subagentModel) throw new Error('No local Ollama model selected. Open Settings and pick a model (Subagent Provider: Ollama (Local)).');
-            // Use Ollama's native chat API so we can bound the context window (num_ctx) —
-            // the OpenAI-compatible endpoint ignores it. The OpenAI-style messages/tools
-            // payload is accepted natively; we just disable streaming and add options.
-            endpointUrl = `${getOllamaLocalBase()}/api/chat`;
             payload.model = subagentModel;
-            payload.stream = false;
-            Object.assign(payload, getOllamaLocalRequestExtras());
+            if (ollamaLocalUseNative) {
+              // Native chat API so we can bound the context window (num_ctx) — the
+              // OpenAI-compatible endpoint ignores it. Disable streaming, drop the
+              // OpenAI-only tool_choice field, and add num_ctx/keep_alive.
+              endpointUrl = `${getOllamaLocalBase()}/api/chat`;
+              payload.stream = false;
+              delete payload.tool_choice;
+              Object.assign(payload, getOllamaLocalRequestExtras());
+            } else {
+              // Fallback: the proven OpenAI-compatible endpoint (no per-request num_ctx,
+              // but guaranteed to run the subagent).
+              endpointUrl = `${getOllamaLocalBase()}/v1/chat/completions`;
+            }
           }
         }
 
@@ -1901,6 +1912,11 @@ When finished, you MUST call finish_task with status="success" only if the reque
         } catch (fetchErr) {
           if (isSubagentCancelled(subagentRecord)) throw fetchErr;
           if (isSubagentInterrupted(subagentRecord)) throw fetchErr;
+          if (subagentProvider === 'ollama_local' && ollamaLocalUseNative) {
+            ollamaLocalUseNative = false;
+            addSubagentMessage('Local Ollama native API call failed; retrying via the OpenAI-compatible endpoint.');
+            continue;
+          }
           if (!isGemini && /failed to fetch|load failed|networkerror/i.test(fetchErr.message || '')) {
             const backendOk = await checkBackendHealth({ announce: true });
             if (!backendOk) {
@@ -1918,6 +1934,11 @@ When finished, you MUST call finish_task with status="success" only if the reque
           continue;
         }
 
+        if (!response.ok && subagentProvider === 'ollama_local' && ollamaLocalUseNative) {
+          ollamaLocalUseNative = false;
+          addSubagentMessage('Local Ollama native API returned an error; retrying via the OpenAI-compatible endpoint.');
+          continue;
+        }
         if (response.status === 429 || response.status >= 500) {
           if (isSubagentCancelled(subagentRecord)) throw new Error('Task cancelled by user.');
           retries++;

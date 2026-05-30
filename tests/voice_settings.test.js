@@ -408,7 +408,7 @@ describe('voice setting session behavior', () => {
     expect(indexHtml).toContain('Subagent Prompt Brain');
     expect(indexHtml).toContain('Refine subagent prompts and steering with the selected subagent model');
     expect(indexHtml).toContain('01-state-dom.js?v=ollama-ctx-20260530');
-    expect(indexHtml).toContain('11-subagents-runner.js?v=ollama-ctx-20260530');
+    expect(indexHtml).toContain('11-subagents-runner.js?v=ollama-fallback-20260530');
   });
 
   it('offers a local Ollama subagent provider with an auto-detected model picker', () => {
@@ -441,6 +441,10 @@ describe('voice setting session behavior', () => {
     expect(runner).toContain('getOllamaLocalNumCtx');
     expect(runner).toContain('num_ctx');
     expect(runner).toContain('/api/chat');
+    // Native /api/chat is tried first (for num_ctx) but falls back to the OpenAI-compatible
+    // endpoint so a subagent always runs even if the native API rejects the request.
+    expect(runner).toContain('ollamaLocalUseNative');
+    expect(runner).toContain('/v1/chat/completions');
     expect(bootUi).toContain("localStorage.setItem('shadow_ollama_local_num_ctx'");
 
     // Backend: server-side model-list endpoint, restricted to loopback.
