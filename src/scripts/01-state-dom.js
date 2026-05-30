@@ -54,9 +54,13 @@ const LEGACY_LIVE_MODEL_ALIASES = {
   'models/gemini-2.5-flash-native-audio-latest': DEFAULT_LIVE_MODEL,
   'models/gemini-2.5-flash-native-audio-preview-09-2025': FALLBACK_LIVE_MODEL
 };
-const DEFAULT_LIVE_THINKING_LEVEL = 'medium';
-const LIVE_THINKING_DEFAULT_MIGRATION_KEY = 'shadow_live_thinking_default_migrated_minimal_20260527';
+const DEFAULT_LIVE_THINKING_LEVEL = 'low';
+const LIVE_THINKING_DEFAULT_MIGRATION_KEY = 'shadow_live_thinking_default_migrated_low_20260530';
 const LIVE_THINKING_LEVELS = new Set(['auto', 'minimal', 'low', 'medium', 'high']);
+// Previous hardcoded defaults ('high' originally, then 'medium'). On a one-time
+// migration we slide anyone still sitting on an old default down to the new 'low'
+// default; deliberate 'minimal'/'low' choices are left untouched.
+const LIVE_THINKING_LEGACY_DEFAULTS = new Set(['high', 'medium']);
 
 function normalizeLiveModel(model) {
   const requestedModel = String(model || '').trim();
@@ -72,8 +76,7 @@ function normalizeLiveThinkingLevel(level) {
 function migrateLiveThinkingDefault(level) {
   const normalized = normalizeLiveThinkingLevel(level);
   const migrationApplied = localStorage.getItem(LIVE_THINKING_DEFAULT_MIGRATION_KEY) === 'true';
-  const locallyMigratedToDefault = migrationApplied && localStorage.getItem('shadow_live_thinking_level') === DEFAULT_LIVE_THINKING_LEVEL;
-  if ((!migrationApplied && (!level || normalized === 'high')) || (locallyMigratedToDefault && normalized === 'high')) {
+  if (!migrationApplied && (!level || LIVE_THINKING_LEGACY_DEFAULTS.has(normalized))) {
     localStorage.setItem(LIVE_THINKING_DEFAULT_MIGRATION_KEY, 'true');
     return DEFAULT_LIVE_THINKING_LEVEL;
   }

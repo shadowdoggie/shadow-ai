@@ -268,12 +268,12 @@ describe('voice setting session behavior', () => {
       normalizeLiveThinkingLevel,
       supportsLiveThinkingLevel,
       getLiveGenerationThinkingConfig
-    } = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'medium');
+    } = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'minimal');
 
-    expect(liveThinkingLevel).toBe('medium');
-    expect(getStoredThinkingLevel()).toBe('medium');
+    expect(liveThinkingLevel).toBe('minimal');
+    expect(getStoredThinkingLevel()).toBe('minimal');
     expect(normalizeLiveThinkingLevel('LOW')).toBe('low');
-    expect(normalizeLiveThinkingLevel('bad')).toBe('medium');
+    expect(normalizeLiveThinkingLevel('bad')).toBe('low');
     expect(supportsLiveThinkingLevel(DEFAULT_LIVE_MODEL)).toBe(true);
     expect(supportsLiveThinkingLevel(FALLBACK_LIVE_MODEL)).toBe(false);
     expect(getLiveGenerationThinkingConfig(DEFAULT_LIVE_MODEL, 'high')).toEqual({ thinkingLevel: 'high' });
@@ -281,14 +281,14 @@ describe('voice setting session behavior', () => {
     expect(getLiveGenerationThinkingConfig(FALLBACK_LIVE_MODEL, 'high')).toBe(null);
   });
 
-  it('migrates the previous high voice reasoning default to the medium default', () => {
-    const {
-      liveThinkingLevel,
-      getStoredThinkingLevel
-    } = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'high');
+  it('migrates previous default voice reasoning levels (high/medium) down to the low default', () => {
+    const fromHigh = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'high');
+    expect(fromHigh.liveThinkingLevel).toBe('low');
+    expect(fromHigh.getStoredThinkingLevel()).toBe('low');
 
-    expect(liveThinkingLevel).toBe('medium');
-    expect(getStoredThinkingLevel()).toBe('medium');
+    const fromMedium = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'medium');
+    expect(fromMedium.liveThinkingLevel).toBe('low');
+    expect(fromMedium.getStoredThinkingLevel()).toBe('low');
   });
 
   it('routes executable work away from foreground smart consults', () => {
@@ -407,7 +407,7 @@ describe('voice setting session behavior', () => {
     expect(indexHtml).toContain('input-assistant-name');
     expect(indexHtml).toContain('Subagent Prompt Brain');
     expect(indexHtml).toContain('Refine subagent prompts and steering with the selected subagent model');
-    expect(indexHtml).toContain('01-state-dom.js?v=upload-resilience-20260529');
+    expect(indexHtml).toContain('01-state-dom.js?v=voice-reasoning-low-20260530');
     expect(indexHtml).toContain('11-subagents-runner.js?v=subagent-31lite-20260529');
   });
 
