@@ -1,0 +1,39 @@
+{
+  "name": "shadow-ai",
+  "version": "1.0.0",
+  "description": "A Windows voice-first AI companion — real-time voice conversation, long-term memory, web search, and background subagents.",
+  "main": "scheduler.js",
+  "os": [
+    "win32"
+  ],
+  "scripts": {
+    "start": "powershell -NoProfile -ExecutionPolicy Bypass -File ./run.ps1",
+    "test": "vitest run",
+    "test:soak": "vitest run tests/backend_runtime_smoke.test.js",
+    "test:watch": "vitest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shadowdoggie/shadow-ai.git"
+  },
+  "keywords": [
+    "voice-assistant",
+    "ai-companion",
+    "gemini",
+    "voice",
+    "windows"
+  ],
+  "author": "shadowdoggie",
+  "license": "AGPL-3.0-or-later",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/shadowdoggie/shadow-ai/issues"
+  },
+  "homepage": "https://github.com/shadowdoggie/shadow-ai#readme",
+  "dependencies": {
+    "playwright": "^1.60.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.7"
+  }
+}
