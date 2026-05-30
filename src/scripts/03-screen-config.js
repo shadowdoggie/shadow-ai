@@ -346,6 +346,12 @@ async function loadConfigFromServer() {
       localStorage.setItem('shadow_ollama_local_endpoint', ollamaLocalEndpoint);
       if (inputOllamaLocalEndpoint) inputOllamaLocalEndpoint.value = ollamaLocalEndpoint;
     }
+    if (config.shadow_ollama_local_num_ctx !== undefined) {
+      const parsedCtx = parseInt(config.shadow_ollama_local_num_ctx, 10);
+      ollamaLocalNumCtx = (!isNaN(parsedCtx) && parsedCtx >= 512) ? parsedCtx : 8192;
+      localStorage.setItem('shadow_ollama_local_num_ctx', String(ollamaLocalNumCtx));
+      if (inputOllamaLocalNumCtx) inputOllamaLocalNumCtx.value = ollamaLocalNumCtx;
+    }
     if (config.shadow_searxng_url !== undefined) {
       searxngSearchUrl = config.shadow_searxng_url || 'http://127.0.0.1/search';
       localStorage.setItem('shadow_searxng_url', searxngSearchUrl);

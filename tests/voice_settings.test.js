@@ -407,8 +407,8 @@ describe('voice setting session behavior', () => {
     expect(indexHtml).toContain('input-assistant-name');
     expect(indexHtml).toContain('Subagent Prompt Brain');
     expect(indexHtml).toContain('Refine subagent prompts and steering with the selected subagent model');
-    expect(indexHtml).toContain('01-state-dom.js?v=ollama-local-20260530');
-    expect(indexHtml).toContain('11-subagents-runner.js?v=ollama-local-20260530');
+    expect(indexHtml).toContain('01-state-dom.js?v=ollama-ctx-20260530');
+    expect(indexHtml).toContain('11-subagents-runner.js?v=ollama-ctx-20260530');
   });
 
   it('offers a local Ollama subagent provider with an auto-detected model picker', () => {
@@ -434,7 +434,14 @@ describe('voice setting session behavior', () => {
     expect(runner).toContain("provider === 'ollama_local'");
     expect(runner).toContain("subagentProvider === 'ollama_local'");
     expect(runner).toContain('getOllamaLocalBase()');
-    expect(runner).toContain('/v1/chat/completions');
+
+    // User-selectable context size (num_ctx) threaded into local Ollama calls + native chat.
+    expect(indexHtml).toContain('input-ollama-local-num-ctx');
+    expect(stateDom).toContain("localStorage.getItem('shadow_ollama_local_num_ctx')");
+    expect(runner).toContain('getOllamaLocalNumCtx');
+    expect(runner).toContain('num_ctx');
+    expect(runner).toContain('/api/chat');
+    expect(bootUi).toContain("localStorage.setItem('shadow_ollama_local_num_ctx'");
 
     // Backend: server-side model-list endpoint, restricted to loopback.
     expect(runPs1).toContain('/api/ollama/local/models');
@@ -950,8 +957,8 @@ describe('voice setting session behavior', () => {
     expect(screenConfig).not.toContain('hey shadow');
     expect(bootUi).not.toContain('startWakeWordListener();');
     expect(liveConnection).not.toContain('startWakeWordListener();');
-    expect(indexHtml).toContain('02-boot-ui.js?v=ollama-local-20260530');
-    expect(indexHtml).toContain('03-screen-config.js?v=ollama-local-20260530');
+    expect(indexHtml).toContain('02-boot-ui.js?v=ollama-ctx-20260530');
+    expect(indexHtml).toContain('03-screen-config.js?v=ollama-ctx-20260530');
     expect(indexHtml).toContain('05-live-connection.js?v=upload-resilience-20260529');
     expect(indexHtml).toContain('08-memory.js?v=upload-resilience-20260529');
     expect(indexHtml).toContain('10-scheduler-proactive.js?v=reboot-truth-20260528');

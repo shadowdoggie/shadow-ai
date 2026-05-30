@@ -384,6 +384,11 @@
             <button id="btn-refresh-ollama-local-models" class="secondary-button" type="button">Refresh models</button>
             <span id="ollama-local-status" class="field-hint" style="margin:0;">No model loaded yet.</span>
           </div>
+          <label for="input-ollama-local-num-ctx" style="display:block;margin-top:12px;">Context size (num_ctx)</label>
+          <input type="number" id="input-ollama-local-num-ctx" min="512" step="512" placeholder="8192" autocomplete="off">
+          <span class="field-hint" style="display:block;margin-top:4px;">
+            How much context the model loads. <strong>Smaller = loads faster and uses far less VRAM.</strong> 4096–8192 is plenty for most tasks; large values can make the model slow to load and eat your VRAM. Applies to local Ollama only.
+          </span>
           <span class="field-hint" style="display:block;margin-top:6px;">
             Runs against your own machine — no API key, fully offline. Install <a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer" style="color:#00f2fe;">Ollama</a>, run a model (e.g. <code>ollama pull llama3.1</code>), then click Refresh to pick it. The model list is auto-detected from your running Ollama.
           </span>
@@ -658,9 +663,9 @@
   <video id="screen-video" autoplay playsinline style="display:none;"></video>
   <canvas id="screen-canvas" style="display:none;"></canvas>
 
-  <script src="scripts/01-state-dom.js?v=ollama-local-20260530"></script>
-  <script src="scripts/02-boot-ui.js?v=ollama-local-20260530"></script>
-  <script src="scripts/03-screen-config.js?v=ollama-local-20260530"></script>
+  <script src="scripts/01-state-dom.js?v=ollama-ctx-20260530"></script>
+  <script src="scripts/02-boot-ui.js?v=ollama-ctx-20260530"></script>
+  <script src="scripts/03-screen-config.js?v=ollama-ctx-20260530"></script>
   <script src="scripts/04-audio.js?v=audio-stall-recovery-20260528"></script>
   <script src="scripts/05-live-connection.js?v=upload-resilience-20260529"></script>
   <script src="scripts/06-transcript.js?v=release-hardening-20260528"></script>
@@ -668,7 +673,7 @@
   <script src="scripts/08-memory.js?v=upload-resilience-20260529"></script>
   <script src="scripts/09-subagents-core.js?v=refine-quiet-20260529"></script>
   <script src="scripts/10-scheduler-proactive.js?v=reboot-truth-20260528"></script>
-  <script src="scripts/11-subagents-runner.js?v=ollama-local-20260530"></script>
+  <script src="scripts/11-subagents-runner.js?v=ollama-ctx-20260530"></script>
   <script src="scripts/12-subagents-notifications.js?v=cred-prompt-20260529"></script>
   <script src="scripts/13-google-workspace.js?v=upload-resilience-20260529"></script>
 </body>

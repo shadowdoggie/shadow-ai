@@ -755,6 +755,18 @@ function getOllamaLocalBase() {
   return String(ep).replace(/\/+$/, '');
 }
 
+// User-chosen context window for local Ollama. Smaller = faster load + less VRAM.
+function getOllamaLocalNumCtx() {
+  const n = (typeof ollamaLocalNumCtx !== 'undefined') ? parseInt(ollamaLocalNumCtx, 10) : NaN;
+  return (!isNaN(n) && n >= 512) ? n : 8192;
+}
+
+// Extra options sent to local Ollama on every call: bound the context window (the big
+// lever for load time/VRAM) and keep the model warm so back-to-back calls don't reload it.
+function getOllamaLocalRequestExtras() {
+  return { options: { num_ctx: getOllamaLocalNumCtx() }, keep_alive: '30m' };
+}
+
 function getSmartConsultModel() {
   const codexProvider = typeof OPENAI_CODEX_PROVIDER === 'undefined' ? 'openai_codex' : OPENAI_CODEX_PROVIDER;
   const provider = typeof subagentProvider === 'undefined' ? codexProvider : subagentProvider;
@@ -1073,7 +1085,7 @@ async function runSubagentPromptRefinement(args = {}) {
         body: JSON.stringify({
           url: `${getOllamaLocalBase()}/api/chat`,
           headers: { 'Content-Type': 'application/json' },
-          body: createChatSubagentPromptRefinementPayload(args, targetModel)
+          body: { ...createChatSubagentPromptRefinementPayload(args, targetModel), ...getOllamaLocalRequestExtras() }
         })
       }, SMART_CONSULT_MODEL_TIMEOUT_MS, refineRecord);
       const json = await readFetchResponseJsonWithTimeout(response, SMART_CONSULT_MODEL_TIMEOUT_MS, refineRecord);
@@ -1212,7 +1224,7 @@ async function runSmartConsult(args = {}) {
         body: JSON.stringify({
           url: `${getOllamaLocalBase()}/api/chat`,
           headers: { 'Content-Type': 'application/json' },
-          body: createOllamaSmartConsultPayload(args, targetModel)
+          body: { ...createOllamaSmartConsultPayload(args, targetModel), ...getOllamaLocalRequestExtras() }
         })
       }, SMART_CONSULT_MODEL_TIMEOUT_MS, consultRecord);
       const json = await readFetchResponseJsonWithTimeout(response, SMART_CONSULT_MODEL_TIMEOUT_MS, consultRecord);
@@ -1851,8 +1863,13 @@ When finished, you MUST call finish_task with status="success" only if the reque
             payload.model = subagentModel || 'deepseek-v3.1:671b-cloud';
           } else if (subagentProvider === 'ollama_local') {
             if (!subagentModel) throw new Error('No local Ollama model selected. Open Settings and pick a model (Subagent Provider: Ollama (Local)).');
-            endpointUrl = `${getOllamaLocalBase()}/v1/chat/completions`;
+            // Use Ollama's native chat API so we can bound the context window (num_ctx) —
+            // the OpenAI-compatible endpoint ignores it. The OpenAI-style messages/tools
+            // payload is accepted natively; we just disable streaming and add options.
+            endpointUrl = `${getOllamaLocalBase()}/api/chat`;
             payload.model = subagentModel;
+            payload.stream = false;
+            Object.assign(payload, getOllamaLocalRequestExtras());
           }
         }
 
@@ -1927,6 +1944,24 @@ When finished, you MUST call finish_task with status="success" only if the reque
         json = parseCodexResponsesSseToGemini(sseText);
       } else {
         json = await readFetchResponseJsonWithTimeout(response, SUBAGENT_MODEL_TIMEOUT_MS, subagentRecord);
+      }
+
+      // Local Ollama's native /api/chat returns { message: {...} } instead of OpenAI's
+      // choices[] — and tool-call arguments come back as an object, not a JSON string.
+      // Normalize to the OpenAI shape so the translation below works unchanged.
+      if (subagentProvider === 'ollama_local' && json && json.message && !json.choices) {
+        const m = json.message;
+        const toolCalls = Array.isArray(m.tool_calls) ? m.tool_calls.map((tc, i) => ({
+          id: (tc && tc.id) || `call_${Date.now()}_${i}`,
+          type: 'function',
+          function: {
+            name: tc && tc.function && tc.function.name,
+            arguments: (tc && tc.function && typeof tc.function.arguments === 'string')
+              ? tc.function.arguments
+              : JSON.stringify((tc && tc.function && tc.function.arguments) || {})
+          }
+        })) : undefined;
+        json = { choices: [{ message: { role: 'assistant', content: m.content || '', tool_calls: toolCalls } }] };
       }
 
       // Translate OpenAI response back to Gemini format

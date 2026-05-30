@@ -170,6 +170,7 @@ let subagentReasoningMode = localStorage.getItem('shadow_subagent_reasoning_mode
 let minimaxApiKey = localStorage.getItem('shadow_minimax_key') || '';
 let moonshotApiKey = localStorage.getItem('shadow_moonshot_key') || '';
 let ollamaLocalEndpoint = localStorage.getItem('shadow_ollama_local_endpoint') || 'http://localhost:11434';
+let ollamaLocalNumCtx = parseInt(localStorage.getItem('shadow_ollama_local_num_ctx') || '8192', 10) || 8192;
 
 let ollamaApiKey = localStorage.getItem('shadow_ollama_key') || '';
 let searxngSearchUrl = localStorage.getItem('shadow_searxng_url') || 'http://127.0.0.1/search';
@@ -809,6 +810,7 @@ const groupMoonshotKey = document.getElementById('group-moonshot-key');
 const groupOllamaSettings = document.getElementById('group-ollama-settings');
 const groupOllamaLocalSettings = document.getElementById('group-ollama-local-settings');
 const inputOllamaLocalEndpoint = document.getElementById('input-ollama-local-endpoint');
+const inputOllamaLocalNumCtx = document.getElementById('input-ollama-local-num-ctx');
 const btnRefreshOllamaLocalModels = document.getElementById('btn-refresh-ollama-local-models');
 const ollamaLocalStatus = document.getElementById('ollama-local-status');
 const inputMemoryBackupEnabled = document.getElementById('input-memory-backup-enabled');

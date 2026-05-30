@@ -337,6 +337,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       if (groupOllamaLocalSettings) groupOllamaLocalSettings.style.display = 'block';
       if (selectSubagentModelOllamaLocal) selectSubagentModelOllamaLocal.style.display = 'block';
       if (inputOllamaLocalEndpoint) inputOllamaLocalEndpoint.value = ollamaLocalEndpoint;
+      if (inputOllamaLocalNumCtx) inputOllamaLocalNumCtx.value = ollamaLocalNumCtx;
       refreshOllamaLocalModels();
     }
     updateCodexReasoningUI();
@@ -512,6 +513,11 @@ window.addEventListener('DOMContentLoaded', async () => {
       if (inputOllamaLocalEndpoint) {
         ollamaLocalEndpoint = inputOllamaLocalEndpoint.value.trim() || 'http://localhost:11434';
       }
+      if (inputOllamaLocalNumCtx) {
+        const parsedCtx = parseInt(inputOllamaLocalNumCtx.value, 10);
+        ollamaLocalNumCtx = (!isNaN(parsedCtx) && parsedCtx >= 512) ? parsedCtx : 8192;
+        inputOllamaLocalNumCtx.value = ollamaLocalNumCtx;
+      }
       if (selectSubagentReasoningMode) {
         const requestedReasoningMode = selectSubagentReasoningMode.value;
         subagentReasoningMode = OPENAI_CODEX_REASONING_MODES.has(requestedReasoningMode) ? requestedReasoningMode : 'medium';
@@ -533,6 +539,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
       localStorage.setItem('shadow_ollama_key', ollamaApiKey);
       localStorage.setItem('shadow_ollama_local_endpoint', ollamaLocalEndpoint);
+      localStorage.setItem('shadow_ollama_local_num_ctx', String(ollamaLocalNumCtx));
       localStorage.setItem('shadow_searxng_url', searxngSearchUrl);
       localStorage.setItem('shadow_searxng_port', searxngSearchPort);
 
