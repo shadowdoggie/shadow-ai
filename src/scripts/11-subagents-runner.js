@@ -187,27 +187,16 @@ function maybeFinalizeCodexPlainTextResponse(task, subagentRecord, textResponse,
   return true;
 }
 
-// Local models often reply "done, I made the file" in prose instead of emitting a finish_task
-// tool call (weak tool-calling), which would otherwise loop forever. If there's already a
-// successful tool result proving the work happened, accept the prose reply as completion.
-function maybeFinalizeLocalOllamaPlainTextResponse(task, subagentRecord, textResponse, plainTextRepairCount = 0) {
-  if (!subagentRecord) return false;
-  const clean = String(textResponse || '').trim();
-  if (!clean) return false;
-  const evidence = typeof getSubagentEvidenceSummary === 'function'
-    ? getSubagentEvidenceSummary(subagentRecord, 6)
-    : '';
-  // Never auto-complete on empty talk — require real tool evidence the task was done.
-  if (!evidence) return false;
-  // If it clearly signals it's still mid-work, give it a couple of nudges before forcing finish.
-  const stillWorking = /\b(i need to|i should|i will|i'?ll|next i|let me|continue|searching|search again|not done|still working)\b/i.test(clean);
-  if (stillWorking && plainTextRepairCount < 2) return false;
-  const finalText = `${clean}\n\nVerification: ${evidence}`;
-  completeSubagentRecord(subagentRecord, finalText);
-  renderSubagentFinalBubble('Subagent Completed', task, finalText);
-  notifyVoiceSession(task, finalText, subagentRecord.id);
-  addSubagentMessage('Local Ollama plain-text reply (with tool evidence) auto-wrapped as completed finish_task.');
-  return true;
+// Detect a "the conversation no longer fits the model's context window" error from any provider,
+// so we can recover gracefully instead of hard-failing the subagent.
+function looksLikeContextOverflowError(text) {
+  const t = String(text || '').toLowerCase();
+  return /context\s*(size|length|window)/.test(t)
+    || /context_length_exceeded/.test(t)
+    || /maximum context/.test(t)
+    || /too many tokens|exceeds[^.]*tokens/.test(t)
+    || /reduce the (length|number)/.test(t)
+    || /(prompt|input|message[s]?)\s+(is\s+|are\s+)?too long/.test(t);
 }
 
 function getSubagentTimeoutAssessment(subagentRecord, now = Date.now()) {
@@ -775,11 +764,6 @@ async function ensureReusableLearningArtifact(task, subagentRecord, finalText) {
   return result;
 }
 
-function getOllamaLocalBase() {
-  const ep = (typeof ollamaLocalEndpoint !== 'undefined' && ollamaLocalEndpoint) ? ollamaLocalEndpoint : 'http://localhost:11434';
-  return String(ep).replace(/\/+$/, '');
-}
-
 function getLmstudioBase() {
   const ep = (typeof lmstudioEndpoint !== 'undefined' && lmstudioEndpoint) ? lmstudioEndpoint : 'http://localhost:1234/v1';
   return String(ep).replace(/\/+$/, '');
@@ -788,30 +772,6 @@ function getLmstudioBase() {
 function getCustomOpenAiBase() {
   const ep = (typeof customEndpoint !== 'undefined' && customEndpoint) ? customEndpoint : '';
   return String(ep).replace(/\/+$/, '');
-}
-
-// User-chosen context window for local Ollama. Smaller = faster load + less VRAM.
-function getOllamaLocalNumCtx() {
-  const n = (typeof ollamaLocalNumCtx !== 'undefined') ? parseInt(ollamaLocalNumCtx, 10) : NaN;
-  return (!isNaN(n) && n >= 512) ? n : 8192;
-}
-
-// Extra options sent to local Ollama on every call: bound the context window (the big
-// lever for load time/VRAM) and keep the model warm so back-to-back calls don't reload it.
-function getOllamaLocalRequestExtras() {
-  return { options: { num_ctx: getOllamaLocalNumCtx() }, keep_alive: '30m' };
-}
-
-// Serialize local Ollama model calls across ALL subagents. A single consumer GPU can only run
-// one generation at a time; firing concurrent requests at it starves the GPU and stalls the
-// backend (the "no GPU usage with multiple subagents" symptom). This queue makes concurrent
-// subagents take turns cleanly — one request in flight at a time — instead of choking. It runs
-// the next request whether the previous one resolved or rejected, so a failure never deadlocks it.
-let ollamaLocalRequestChain = Promise.resolve();
-function runExclusiveOllamaLocal(fn) {
-  const result = ollamaLocalRequestChain.then(fn, fn);
-  ollamaLocalRequestChain = result.then(() => undefined, () => undefined);
-  return result;
 }
 
 function getSmartConsultModel() {
@@ -828,7 +788,6 @@ function getSmartConsultModel() {
   if (provider === 'minimax') return configuredModel || 'minimax-m2.7';
   if (provider === 'moonshot') return configuredModel || 'moonshotai/kimi-k2.6';
   if (provider === 'ollama') return configuredModel || 'deepseek-v3.1:671b-cloud';
-  if (provider === 'ollama_local') return configuredModel || '';
   if (provider === 'lmstudio_local') return configuredModel || '';
   if (provider === 'custom_openai') return configuredModel || '';
   return configuredModel || 'gpt-5.5';
@@ -1131,20 +1090,6 @@ async function runSubagentPromptRefinement(args = {}) {
       const json = await readFetchResponseJsonWithTimeout(response, SMART_CONSULT_MODEL_TIMEOUT_MS, refineRecord);
       if (!response.ok) throw new Error(`Subagent prompt refinement failed: HTTP ${response.status}. ${JSON.stringify(json).slice(0, 500)}`);
       refined = extractTextFromOllamaChatResponse(json);
-    } else if (provider === 'ollama_local') {
-      if (!targetModel) throw new Error('No local Ollama model selected. Open Settings and pick a model (Subagent Provider: Ollama (Local)).');
-      response = await fetchWithTimeout('/api/proxy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: `${getOllamaLocalBase()}/api/chat`,
-          headers: { 'Content-Type': 'application/json' },
-          body: { ...createChatSubagentPromptRefinementPayload(args, targetModel), ...getOllamaLocalRequestExtras() }
-        })
-      }, SMART_CONSULT_MODEL_TIMEOUT_MS, refineRecord);
-      const json = await readFetchResponseJsonWithTimeout(response, SMART_CONSULT_MODEL_TIMEOUT_MS, refineRecord);
-      if (!response.ok) throw new Error(`Subagent prompt refinement failed: HTTP ${response.status}. ${JSON.stringify(json).slice(0, 500)}`);
-      refined = extractTextFromOllamaChatResponse(json);
     } else if (provider === 'lmstudio_local' || provider === 'custom_openai') {
       if (!targetModel) throw new Error(`No ${provider === 'custom_openai' ? 'model name set for the custom endpoint' : 'LM Studio model selected'}. Set it in Settings.`);
       const base = provider === 'custom_openai' ? getCustomOpenAiBase() : getLmstudioBase();
@@ -1290,23 +1235,6 @@ async function runSmartConsult(args = {}) {
       }
       answer = extractTextFromOllamaChatResponse(json);
       reasoningEffort = 'provider-default';
-    } else if (provider === 'ollama_local') {
-      if (!targetModel) throw new Error('No local Ollama model selected. Open Settings and pick a model (Subagent Provider: Ollama (Local)).');
-      response = await fetchWithTimeout('/api/proxy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: `${getOllamaLocalBase()}/api/chat`,
-          headers: { 'Content-Type': 'application/json' },
-          body: { ...createOllamaSmartConsultPayload(args, targetModel), ...getOllamaLocalRequestExtras() }
-        })
-      }, SMART_CONSULT_MODEL_TIMEOUT_MS, consultRecord);
-      const json = await readFetchResponseJsonWithTimeout(response, SMART_CONSULT_MODEL_TIMEOUT_MS, consultRecord);
-      if (!response.ok) {
-        throw new Error(`Smart model request failed: HTTP ${response.status}. ${JSON.stringify(json).slice(0, 500)}`);
-      }
-      answer = extractTextFromOllamaChatResponse(json);
-      reasoningEffort = 'provider-default';
     } else if (provider === 'lmstudio_local' || provider === 'custom_openai') {
       if (!targetModel) throw new Error(`No ${provider === 'custom_openai' ? 'model name set for the custom endpoint' : 'LM Studio model selected'}. Set it in Settings.`);
       const base = provider === 'custom_openai' ? getCustomOpenAiBase() : getLmstudioBase();
@@ -1412,13 +1340,15 @@ async function runRestSubagent(task, model, subagentRecord = null) {
   const webSearchCheckpoint = getSubagentWebSearchCheckpoint(subagentProvider, task);
   console.log(`[Subagent] Using model: "${targetModel}" (provider: ${subagentProvider})`);
 
-  const isLocalOllamaSubagent = subagentProvider === 'ollama_local';
-  // Local models handle the "save a skill before finishing" dance poorly and stall on simple
-  // tasks. For local Ollama, make self-learning optional and tell it to finish promptly.
-  const requiredSelfLearningRule = isLocalOllamaSubagent
+  // Local models (LM Studio / custom endpoints) handle the "save a skill before finishing" dance
+  // poorly: it adds turns and grows the prompt past their loaded context (causing crashes), and
+  // they stall on simple tasks. For local providers, make self-learning optional and tell them to
+  // finish promptly; Shadow still auto-saves a reusable skill on finish for repeatable tasks.
+  const isLocalSubagentProvider = subagentProvider === 'lmstudio_local' || subagentProvider === 'custom_openai';
+  const requiredSelfLearningRule = isLocalSubagentProvider
     ? '- SELF-LEARNING (OPTIONAL for local models): Saving a reusable skill is OPTIONAL and NOT required. For simple one-off tasks (e.g. creating a file), do NOT call get_available_skills or save_skill — call finish_task as soon as a tool result confirms the deliverable exists.'
     : '- REQUIRED SELF-LEARNING: For successful repeatable workflows, including media downloads, conversions, uploads, browser workflows, scripts, builds, and automations, you MUST save or merge a reusable skill BEFORE finish_task(status="success"). You MUST call get_available_skills first to inspect duplicates. If a similar skill exists, merge your new details into that existing item using its existing name; do NOT create a duplicate.';
-  const trailingSelfLearningRule = isLocalOllamaSubagent
+  const trailingSelfLearningRule = isLocalSubagentProvider
     ? 'FINISH PROMPTLY: As soon as the requested outcome exists and a tool result confirms it, call finish_task(status="success") immediately. Do not take extra exploratory steps, and do not save skills unless the user explicitly asked to save a reusable workflow.'
     : 'SELF-LEARNING: After completing a repeatable automation/download/build workflow, use "save_skill" to document/reuse the exact steps. You must check "get_available_skills" first to avoid duplicates. Similar items must be merged into the existing item, not duplicated.';
   const subagentSystemInstruction = `You are a focused, efficient background automation subagent of Shadow.
@@ -1854,11 +1784,6 @@ When finished, you MUST call finish_task with status="success" only if the reque
   const loopWarningThreshold = typeof SUBAGENT_LOOP_WARNING_THRESHOLD === 'number' ? SUBAGENT_LOOP_WARNING_THRESHOLD : 300;
   let loopWarningSent = false;
   let codexPlainTextRepairCount = 0;
-  // Local Ollama: try native /api/chat first (honors num_ctx); if it fails once, stay on the
-  // OpenAI-compatible endpoint for the REST of this subagent. Native rejects multi-turn tool
-  // history (OpenAI-style string tool-call args), so without persisting this we'd re-fail and
-  // 400 every single step. The model stays warm at the num_ctx it first loaded with.
-  let ollamaLocalUseNative = true;
 
   while (loopCount < maxLoops) {
     loopCount++;
@@ -1972,22 +1897,6 @@ When finished, you MUST call finish_task with status="success" only if the reque
             endpointUrl = 'https://ollama.com/v1/chat/completions';
             headers['Authorization'] = `Bearer ${ollamaApiKey}`;
             payload.model = subagentModel || 'deepseek-v3.1:671b-cloud';
-          } else if (subagentProvider === 'ollama_local') {
-            if (!subagentModel) throw new Error('No local Ollama model selected. Open Settings and pick a model (Subagent Provider: Ollama (Local)).');
-            payload.model = subagentModel;
-            // Use the native chat API only on the FIRST turn — that's what loads the model at
-            // the chosen num_ctx and keeps it warm. Ollama's native API rejects multi-turn tool
-            // history (OpenAI-style string tool-call args), so for every later turn we use the
-            // OpenAI-compatible endpoint, which reuses the already-warm model. This avoids the
-            // pointless 400 on turn 2+ while still honoring num_ctx.
-            if (ollamaLocalUseNative && loopCount <= 1) {
-              endpointUrl = `${getOllamaLocalBase()}/api/chat`;
-              payload.stream = false;
-              delete payload.tool_choice;
-              Object.assign(payload, getOllamaLocalRequestExtras());
-            } else {
-              endpointUrl = `${getOllamaLocalBase()}/v1/chat/completions`;
-            }
           } else if (subagentProvider === 'lmstudio_local' || subagentProvider === 'custom_openai') {
             if (!subagentModel) throw new Error(`No ${subagentProvider === 'custom_openai' ? 'model name set for the custom endpoint' : 'LM Studio model selected'}. Open Settings and pick/enter a model.`);
             const base = subagentProvider === 'custom_openai' ? getCustomOpenAiBase() : getLmstudioBase();
@@ -2024,23 +1933,11 @@ When finished, you MUST call finish_task with status="success" only if the reque
                 body: payload
               })
             }, SUBAGENT_MODEL_TIMEOUT_MS, 'model_proxy');
-            // Local Ollama: serialize requests so concurrent subagents take turns on the single
-            // GPU instead of stalling each other. Other providers run concurrently as before.
-            if (subagentProvider === 'ollama_local') {
-              subagentRecord.lastMessage = 'Waiting for the local model (one subagent runs at a time)...';
-              response = await runExclusiveOllamaLocal(sendProxyRequest);
-            } else {
-              response = await sendProxyRequest();
-            }
+            response = await sendProxyRequest();
           }
         } catch (fetchErr) {
           if (isSubagentCancelled(subagentRecord)) throw fetchErr;
           if (isSubagentInterrupted(subagentRecord)) throw fetchErr;
-          if (subagentProvider === 'ollama_local' && ollamaLocalUseNative) {
-            ollamaLocalUseNative = false;
-            addSubagentMessage('Local Ollama native API call failed; retrying via the OpenAI-compatible endpoint.');
-            continue;
-          }
           if (!isGemini && /failed to fetch|load failed|networkerror/i.test(fetchErr.message || '')) {
             const backendOk = await checkBackendHealth({ announce: true });
             if (!backendOk) {
@@ -2058,11 +1955,6 @@ When finished, you MUST call finish_task with status="success" only if the reque
           continue;
         }
 
-        if (!response.ok && subagentProvider === 'ollama_local' && ollamaLocalUseNative) {
-          ollamaLocalUseNative = false;
-          addSubagentMessage('Local Ollama native API returned an error; retrying via the OpenAI-compatible endpoint.');
-          continue;
-        }
         if (response.status === 429 || response.status >= 500) {
           if (isSubagentCancelled(subagentRecord)) throw new Error('Task cancelled by user.');
           retries++;
@@ -2080,6 +1972,37 @@ When finished, you MUST call finish_task with status="success" only if the reque
 
       if (!response.ok) {
         const errorText = await readFetchResponseTextWithTimeout(response, SUBAGENT_MODEL_TIMEOUT_MS, subagentRecord);
+        // Context window exhausted: don't hard-fail. First try collapsing the step-by-step
+        // history into a short progress summary and continuing; if even that overflows, finish
+        // gracefully (success with the evidence if work was done, else partial) instead of crashing.
+        if (looksLikeContextOverflowError(errorText)) {
+          subagentRecord.contextTrims = (Number(subagentRecord.contextTrims) || 0) + 1;
+          const evidence = (typeof getSubagentEvidenceSummary === 'function' ? getSubagentEvidenceSummary(subagentRecord, 12) : '') || '';
+          if (subagentRecord.contextTrims <= 2) {
+            history = [{
+              role: 'user',
+              parts: [{ text: `Task: ${task}\n\n[The earlier step-by-step history was trimmed to fit the model's context window. Progress so far, from tool results: ${evidence || 'work was in progress (details trimmed)'}]\n\nContinue from here. If the task is already complete based on that progress, call finish_task(status="success") with a summary now; otherwise do the next necessary step.` }]
+            }];
+            addSubagentMessage('Context window full — trimmed the history to a progress summary and continuing.');
+            refreshSubagentProgressState(subagentRecord);
+            continue;
+          }
+          // Trimming twice still overflowed (tiny context / huge system prompt). Finish gracefully.
+          if (evidence) {
+            const finalText = `Stopped because the model's context window filled up, but work was done first.\n\nProgress / verification: ${evidence}`;
+            completeSubagentRecord(subagentRecord, finalText);
+            renderSubagentFinalBubble('Subagent Completed', task, finalText);
+            notifyVoiceSession(task, finalText, subagentRecord.id);
+            addSubagentMessage('Context window exhausted; finished with the verified progress so far.');
+          } else {
+            const reason = 'Ran out of the model\'s context window before completing, and no verified result had been produced yet. Try a model with a larger context, or break the task into smaller parts.';
+            partialSubagentRecord(subagentRecord, reason, reason);
+            renderSubagentFinalBubble('Subagent Partially Completed', task, reason);
+            notifyVoiceSessionOfPartial(task, reason, subagentRecord.id);
+            addSubagentMessage('Context window exhausted with no verified result; finished partial.');
+          }
+          break;
+        }
         throw new Error(`API returned status ${response.status}: ${errorText}`);
       }
 
@@ -2089,24 +2012,6 @@ When finished, you MUST call finish_task with status="success" only if the reque
         json = parseCodexResponsesSseToGemini(sseText);
       } else {
         json = await readFetchResponseJsonWithTimeout(response, SUBAGENT_MODEL_TIMEOUT_MS, subagentRecord);
-      }
-
-      // Local Ollama's native /api/chat returns { message: {...} } instead of OpenAI's
-      // choices[] — and tool-call arguments come back as an object, not a JSON string.
-      // Normalize to the OpenAI shape so the translation below works unchanged.
-      if (subagentProvider === 'ollama_local' && json && json.message && !json.choices) {
-        const m = json.message;
-        const toolCalls = Array.isArray(m.tool_calls) ? m.tool_calls.map((tc, i) => ({
-          id: (tc && tc.id) || `call_${Date.now()}_${i}`,
-          type: 'function',
-          function: {
-            name: tc && tc.function && tc.function.name,
-            arguments: (tc && tc.function && typeof tc.function.arguments === 'string')
-              ? tc.function.arguments
-              : JSON.stringify((tc && tc.function && tc.function.arguments) || {})
-          }
-        })) : undefined;
-        json = { choices: [{ message: { role: 'assistant', content: m.content || '', tool_calls: toolCalls } }] };
       }
 
       // Translate OpenAI response back to Gemini format
@@ -2504,10 +2409,10 @@ When finished, you MUST call finish_task with status="success" only if the reque
                   responseData = { status: 'success', message: 'Auto-saved reusable learning artifact before finishing.', learning: learningResult };
                   addSubagentMessage('Auto-learning completed before finish.');
                 } catch (learningErr) {
-                  const learningMessage = `${getLearningRequirementMessage(task, subagentRecord)} Auto-save failed: ${learningErr.message}`;
-                  responseData = { status: 'error', error: learningMessage };
-                  shouldStopForFinish = false;
-                  addSubagentMessage(`Finish blocked: ${learningMessage}`);
+                  // Best-effort only: NEVER block finishing over the skill auto-save. Blocking made
+                  // weak/local models loop into the skill dance and blow past their context window
+                  // (LM Studio "Context size has been exceeded" crash). Finish the task regardless.
+                  addSubagentMessage(`Reusable-skill auto-save skipped: ${learningErr.message}`);
                 }
               }
               if (finalStatus === 'success' && shouldStopForFinish) {
@@ -2720,11 +2625,6 @@ When finished, you MUST call finish_task with status="success" only if the reque
         if (isOpenAiCodexSubagentProvider(subagentProvider)) {
           codexPlainTextRepairCount++;
           if (maybeFinalizeCodexPlainTextResponse(task, subagentRecord, textResponse, codexPlainTextRepairCount)) {
-            break;
-          }
-        } else if (subagentProvider === 'ollama_local') {
-          codexPlainTextRepairCount++;
-          if (maybeFinalizeLocalOllamaPlainTextResponse(task, subagentRecord, textResponse, codexPlainTextRepairCount)) {
             break;
           }
         }

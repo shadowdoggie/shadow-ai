@@ -407,59 +407,20 @@ describe('voice setting session behavior', () => {
     expect(indexHtml).toContain('input-assistant-name');
     expect(indexHtml).toContain('Subagent Prompt Brain');
     expect(indexHtml).toContain('Refine subagent prompts and steering with the selected subagent model');
-    expect(indexHtml).toContain('01-state-dom.js?v=local-providers-20260530');
-    expect(indexHtml).toContain('11-subagents-runner.js?v=concurrent-refine-20260530');
+    expect(indexHtml).toContain('01-state-dom.js?v=release150b-20260530');
+    expect(indexHtml).toContain('11-subagents-runner.js?v=ctx-overflow-recovery-20260530');
   });
 
-  it('offers a local Ollama subagent provider with an auto-detected model picker', () => {
+  it('offers LM Studio + custom OpenAI-compatible subagent providers, with local Ollama removed', () => {
     const indexHtml = fs.readFileSync(path.join(process.cwd(), 'src', 'index.html'), 'utf8');
-    const stateDom = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '01-state-dom.js'), 'utf8');
-    const bootUi = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '02-boot-ui.js'), 'utf8');
     const runner = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '11-subagents-runner.js'), 'utf8');
     const runPs1 = fs.readFileSync(path.join(process.cwd(), 'run.ps1'), 'utf8');
 
-    // UI: provider option, dynamic model select, endpoint + refresh controls.
-    expect(indexHtml).toContain('<option value="ollama_local">Ollama (Local)</option>');
-    expect(indexHtml).toContain('select-subagent-model-ollama-local');
-    expect(indexHtml).toContain('input-ollama-local-endpoint');
-    expect(indexHtml).toContain('btn-refresh-ollama-local-models');
-
-    // State + boot wiring: endpoint persisted, models auto-fetched.
-    expect(stateDom).toContain("localStorage.getItem('shadow_ollama_local_endpoint')");
-    expect(bootUi).toContain('refreshOllamaLocalModels');
-    expect(bootUi).toContain('/api/ollama/local/models?endpoint=');
-    expect(bootUi).toContain("localStorage.setItem('shadow_ollama_local_endpoint', ollamaLocalEndpoint)");
-
-    // Runner: local routing to the user's own Ollama, no API key, no cloud host.
-    expect(runner).toContain("provider === 'ollama_local'");
-    expect(runner).toContain("subagentProvider === 'ollama_local'");
-    expect(runner).toContain('getOllamaLocalBase()');
-
-    // User-selectable context size (num_ctx) threaded into local Ollama calls + native chat.
-    expect(indexHtml).toContain('input-ollama-local-num-ctx');
-    expect(stateDom).toContain("localStorage.getItem('shadow_ollama_local_num_ctx')");
-    expect(runner).toContain('getOllamaLocalNumCtx');
-    expect(runner).toContain('num_ctx');
-    expect(runner).toContain('/api/chat');
-    // Native /api/chat is tried first (for num_ctx) but falls back to the OpenAI-compatible
-    // endpoint so a subagent always runs even if the native API rejects the request.
-    expect(runner).toContain('ollamaLocalUseNative');
-    expect(runner).toContain('/v1/chat/completions');
-    expect(bootUi).toContain("localStorage.setItem('shadow_ollama_local_num_ctx'");
-
-    // Backend: server-side model-list endpoint, restricted to loopback.
-    expect(runPs1).toContain('/api/ollama/local/models');
-    expect(runPs1).toContain('/api/tags');
-
-    // "Model is loading" heads-up uses Ollama /api/ps, only when reliably detected.
-    const liveConnection = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '05-live-connection.js'), 'utf8');
-    expect(runPs1).toContain('/api/ollama/local/ps');
-    expect(runPs1).toContain('/api/ps');
-    expect(liveConnection).toContain('model_loading');
-
-    // Local Ollama model calls are serialized (single GPU can't run subagents concurrently).
-    expect(runner).toContain('runExclusiveOllamaLocal');
-    expect(runner).toContain('ollamaLocalRequestChain');
+    // Local Ollama was removed: on consumer GPUs Ollama offloaded big models to the CPU
+    // (~20W, unusably slow) regardless of Shadow's request. LM Studio / custom endpoints stay.
+    expect(indexHtml).not.toContain('value="ollama_local"');
+    expect(runner).not.toContain("'ollama_local'");
+    expect(runPs1).not.toContain('/api/ollama/local/');
 
     // LM Studio + custom OpenAI-compatible providers (concurrent; LM Studio handles parallelism).
     expect(indexHtml).toContain('<option value="lmstudio_local">LM Studio (Local)</option>');
@@ -473,6 +434,10 @@ describe('voice setting session behavior', () => {
     expect(runner).toContain('getCustomOpenAiBase()');
     expect(runPs1).toContain('/api/lmstudio/models');
     expect(runPs1).toContain('/api/openai-compat/models');
+
+    // Context-window exhaustion is handled gracefully (trim+continue, then finish) — not a crash.
+    expect(runner).toContain('looksLikeContextOverflowError');
+    expect(runner).toContain('contextTrims');
   });
 
   it('wires Subagent Prompt Brain refinement through settings and the selected subagent model', () => {
@@ -491,7 +456,7 @@ describe('voice setting session behavior', () => {
     expect(screenConfig).toContain('assistant_name: getAssistantName()');
     expect(screenConfig).toContain('requestedArgs.assistant_name');
     expect(liveConnection).toContain('assistant_name');
-    expect(stateDom).toContain("let smartMainRoutingEnabled = localStorage.getItem('shadow_smart_main_routing_enabled') !== 'false'");
+    expect(stateDom).toContain("let smartMainRoutingEnabled = localStorage.getItem('shadow_smart_main_routing_enabled') === 'true'");
     expect(stateDom).toContain('SUBAGENT PROMPT BRAIN');
     expect(stateDom).toContain('Normal voice conversation stays direct through Gemini Live');
     expect(stateDom).toContain('MEDICAL TONE');
@@ -984,9 +949,9 @@ describe('voice setting session behavior', () => {
     expect(screenConfig).not.toContain('hey shadow');
     expect(bootUi).not.toContain('startWakeWordListener();');
     expect(liveConnection).not.toContain('startWakeWordListener();');
-    expect(indexHtml).toContain('02-boot-ui.js?v=local-providers-20260530');
-    expect(indexHtml).toContain('03-screen-config.js?v=local-providers-20260530');
-    expect(indexHtml).toContain('05-live-connection.js?v=steer-async-20260530');
+    expect(indexHtml).toContain('02-boot-ui.js?v=release150b-20260530');
+    expect(indexHtml).toContain('03-screen-config.js?v=remove-ollama-local-20260530');
+    expect(indexHtml).toContain('05-live-connection.js?v=remove-ollama-local-20260530');
     expect(indexHtml).toContain('08-memory.js?v=steer-not-cancel-20260530');
     expect(indexHtml).toContain('10-scheduler-proactive.js?v=reboot-truth-20260528');
   });
@@ -1080,5 +1045,74 @@ describe('voice setting session behavior', () => {
     expect(liveConnection).not.toContain('Main Live model.');
     expect(liveConnection).not.toContain('Proactive profile.');
     expect(liveConnection).not.toContain('Provider-specific subagent model value.');
+  });
+
+  it('exposes an in-app auto-update check (backend endpoint, toast, settings toggle)', () => {
+    const indexHtml = fs.readFileSync(path.join(process.cwd(), 'src', 'index.html'), 'utf8');
+    const runPs1 = fs.readFileSync(path.join(process.cwd(), 'run.ps1'), 'utf8');
+    const stateDom = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '01-state-dom.js'), 'utf8');
+    const bootUi = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '02-boot-ui.js'), 'utf8');
+
+    // Backend: compares installed version to the latest GitHub release.
+    expect(runPs1).toContain('/api/update-check');
+    expect(runPs1).toContain('releases/latest');
+    expect(runPs1).toContain('update_available');
+
+    // UI: toast + settings toggle.
+    expect(indexHtml).toContain('id="update-toast"');
+    expect(indexHtml).toContain('id="btn-update-now"');
+    expect(indexHtml).toContain('id="btn-update-later"');
+    expect(indexHtml).toContain('input-auto-update-check');
+
+    // State default: check ON unless explicitly disabled.
+    expect(stateDom).toContain("let autoUpdateCheckEnabled = localStorage.getItem('shadow_auto_update_check') !== 'false'");
+
+    // Boot wiring + render, using the timeout-wrapped reader (never raw res.json()).
+    expect(bootUi).toContain('maybeCheckForUpdate()');
+    expect(bootUi).toContain('function showUpdateToast');
+    expect(bootUi).toContain("fetchLocalApiWithTimeout('/api/update-check'");
+    expect(bootUi).toContain('shadow_update_dismissed_version');
+  });
+
+  it('runs a multi-step onboarding wizard covering personalization + subagent setup', () => {
+    const indexHtml = fs.readFileSync(path.join(process.cwd(), 'src', 'index.html'), 'utf8');
+    const bootUi = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '02-boot-ui.js'), 'utf8');
+
+    // Wizard scaffolding: step dots + three steps + nav.
+    expect(indexHtml).toContain('id="onboarding-steps"');
+    expect(indexHtml).toContain('class="onboarding-step-dot active" data-step="1"');
+    expect(indexHtml).toContain('data-step="3"');
+    expect(indexHtml).toContain('id="btn-onboard-next"');
+    expect(indexHtml).toContain('id="btn-onboard-back"');
+
+    // Personalization fields.
+    expect(indexHtml).toContain('id="onboarding-user-name"');
+    expect(indexHtml).toContain('id="onboarding-assistant-name"');
+    expect(indexHtml).toContain('id="onboarding-voice"');
+    expect(indexHtml).toContain('id="onboarding-accent"');
+    expect(indexHtml).toContain('id="onboarding-thinking"');
+
+    // Subagent setup step: provider, endpoint, key, per-provider model, and Codex sign-in.
+    expect(indexHtml).toContain('id="onboarding-subagent-provider"');
+    expect(indexHtml).toContain('id="onboarding-subagent-endpoint"');
+    expect(indexHtml).toContain('id="onboarding-subagent-key"');
+    expect(indexHtml).toContain('id="onboarding-subagent-model"');
+    expect(indexHtml).toContain('id="onboarding-subagent-model-text"');
+    expect(indexHtml).toContain('id="btn-onboarding-detect-models"');
+    expect(indexHtml).toContain('id="onboarding-codex-group"');
+    expect(indexHtml).toContain('id="btn-onboarding-codex-login"');
+
+    // Wizard logic in boot.
+    expect(bootUi).toContain('function initOnboardingWizard');
+    expect(bootUi).toContain('function goToOnboardingStep');
+    expect(bootUi).toContain('async function applyOnboardingSubagentChoice');
+    expect(bootUi).toContain('function getOnboardingModelSourceSelect');
+    expect(bootUi).toContain('async function onboardingDetectModels');
+    expect(bootUi).toContain('async function triggerOnboardingCodexLogin');
+    expect(bootUi).toContain("fetchLocalApiWithTimeout('/api/codex/login'");
+    expect(bootUi).toContain('initOnboardingWizard();');
+    // Local providers auto-detect a model so they are never left with a broken model id.
+    expect(bootUi).toContain('/api/lmstudio/models?endpoint=');
+    expect(bootUi).toContain('/api/openai-compat/models?endpoint=');
   });
 });

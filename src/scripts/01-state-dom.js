@@ -153,10 +153,15 @@ let liveThinkingLevel = migrateLiveThinkingDefault(localStorage.getItem('shadow_
 if (liveThinkingLevel !== localStorage.getItem('shadow_live_thinking_level')) {
   localStorage.setItem('shadow_live_thinking_level', liveThinkingLevel);
 }
-// Default ON: the prompt brain only triggers when a subagent is actually spawned/steered
-// (it refines the task with the default Gemini subagent provider, which uses the main key),
-// so it is inert at idle and safe with no subagent connected. Off only if explicitly disabled.
-let smartMainRoutingEnabled = localStorage.getItem('shadow_smart_main_routing_enabled') !== 'false';
+// Default OFF on a fresh install: the prompt brain refines subagent task text through the
+// selected subagent model, which adds latency and a round-trip most users don't want enabled
+// out of the box. Users who previously saved settings have 'true' stored and stay ON; only
+// opt-in ('true') turns it on for new installs. Toggle it any time in Settings.
+let smartMainRoutingEnabled = localStorage.getItem('shadow_smart_main_routing_enabled') === 'true';
+// App auto-update: check GitHub for a newer release on launch (default ON; user can disable).
+// Shadow only NOTIFIES + links the installer download; it never replaces files on its own.
+let autoUpdateCheckEnabled = localStorage.getItem('shadow_auto_update_check') !== 'false';
+let updateDismissedVersion = localStorage.getItem('shadow_update_dismissed_version') || '';
 let smartMainTurnSequence = 0;
 let smartMainConsultInCurrentTurn = false;
 let smartMainRoutingToolInCurrentTurn = false;
@@ -166,11 +171,17 @@ let smartMainLastConsultStartedAt = 0;
 let subagentPromptRefinementInProgress = false;
 let subagentProvider = localStorage.getItem('shadow_subagent_provider') || 'gemini';
 let subagentModel = localStorage.getItem('shadow_subagent_model') || '';
+// Local Ollama was removed (unusably slow CPU-offload on consumer GPUs). Migrate any saved
+// 'ollama_local' selection to the default provider so it doesn't land in a broken state.
+if (subagentProvider === 'ollama_local') {
+  subagentProvider = 'gemini';
+  subagentModel = '';
+  localStorage.setItem('shadow_subagent_provider', 'gemini');
+  localStorage.setItem('shadow_subagent_model', '');
+}
 let subagentReasoningMode = localStorage.getItem('shadow_subagent_reasoning_mode') || 'medium';
 let minimaxApiKey = localStorage.getItem('shadow_minimax_key') || '';
 let moonshotApiKey = localStorage.getItem('shadow_moonshot_key') || '';
-let ollamaLocalEndpoint = localStorage.getItem('shadow_ollama_local_endpoint') || 'http://localhost:11434';
-let ollamaLocalNumCtx = parseInt(localStorage.getItem('shadow_ollama_local_num_ctx') || '8192', 10) || 8192;
 let lmstudioEndpoint = localStorage.getItem('shadow_lmstudio_endpoint') || 'http://localhost:1234/v1';
 let customEndpoint = localStorage.getItem('shadow_custom_endpoint') || '';
 let customApiKey = localStorage.getItem('shadow_custom_api_key') || '';
@@ -758,8 +769,47 @@ const selectEchoGate = document.getElementById('select-echo-gate');
 const inputProactiveEnabled = document.getElementById('input-proactive-enabled');
 const selectProactiveProfile = document.getElementById('select-proactive-profile');
 const inputSystemInstruction = document.getElementById('input-system-instruction');
+const inputAutoUpdateCheck = document.getElementById('input-auto-update-check');
 const onboardingApiKey = document.getElementById('onboarding-api-key');
 const btnToggleKeyVisibility = document.getElementById('btn-toggle-key-visibility');
+
+// Onboarding wizard (multi-step) elements
+const onboardingModalSteps = document.getElementById('onboarding-steps');
+const onboardingUserName = document.getElementById('onboarding-user-name');
+const onboardingAssistantName = document.getElementById('onboarding-assistant-name');
+const onboardingVoice = document.getElementById('onboarding-voice');
+const onboardingAccent = document.getElementById('onboarding-accent');
+const onboardingThinking = document.getElementById('onboarding-thinking');
+const onboardingSubagentProvider = document.getElementById('onboarding-subagent-provider');
+const onboardingSubagentEndpointGroup = document.getElementById('onboarding-subagent-endpoint-group');
+const onboardingSubagentEndpoint = document.getElementById('onboarding-subagent-endpoint');
+const onboardingSubagentEndpointHint = document.getElementById('onboarding-subagent-endpoint-hint');
+const onboardingSubagentKeyGroup = document.getElementById('onboarding-subagent-key-group');
+const onboardingSubagentKey = document.getElementById('onboarding-subagent-key');
+const onboardingSubagentKeyLabel = document.getElementById('onboarding-subagent-key-label');
+const onboardingSubagentInfo = document.getElementById('onboarding-subagent-info');
+const btnOnboardBack = document.getElementById('btn-onboard-back');
+const btnOnboardNext = document.getElementById('btn-onboard-next');
+// Onboarding subagent model + Codex login controls
+const onboardingModelGroup = document.getElementById('onboarding-model-group');
+const onboardingSubagentModel = document.getElementById('onboarding-subagent-model');
+const onboardingSubagentModelText = document.getElementById('onboarding-subagent-model-text');
+const onboardingCustomModelsDatalist = document.getElementById('onboarding-custom-models');
+const onboardingDetectRow = document.getElementById('onboarding-detect-row');
+const btnOnboardingDetectModels = document.getElementById('btn-onboarding-detect-models');
+const onboardingModelStatus = document.getElementById('onboarding-model-status');
+const onboardingCodexGroup = document.getElementById('onboarding-codex-group');
+const onboardingCodexBadge = document.getElementById('onboarding-codex-badge');
+const onboardingCodexStatusText = document.getElementById('onboarding-codex-status-text');
+const onboardingCodexDetails = document.getElementById('onboarding-codex-details');
+const btnOnboardingCodexLogin = document.getElementById('btn-onboarding-codex-login');
+
+// Update-available toast
+const updateToast = document.getElementById('update-toast');
+const updateToastTitle = document.getElementById('update-toast-title');
+const updateToastSubtitle = document.getElementById('update-toast-subtitle');
+const btnUpdateNow = document.getElementById('btn-update-now');
+const btnUpdateLater = document.getElementById('btn-update-later');
 
 // Missing-credential prompt popup
 const credentialModal = document.getElementById('credential-modal');
@@ -794,7 +844,6 @@ const selectSubagentModelOpenaiCodex = document.getElementById('select-subagent-
 const selectSubagentModelMinimax = document.getElementById('select-subagent-model-minimax');
 const selectSubagentModelMoonshot = document.getElementById('select-subagent-model-moonshot');
 const selectSubagentModelOllama = document.getElementById('select-subagent-model-ollama');
-const selectSubagentModelOllamaLocal = document.getElementById('select-subagent-model-ollama-local');
 const selectSubagentModelLmstudioLocal = document.getElementById('select-subagent-model-lmstudio-local');
 const selectSubagentReasoningMode = document.getElementById('select-subagent-reasoning-mode');
 const groupSubagentReasoningMode = document.getElementById('group-subagent-reasoning-mode');
@@ -812,11 +861,6 @@ const inputSearxngSearchPort = document.getElementById('input-searxng-search-por
 const groupMinimaxKey = document.getElementById('group-minimax-key');
 const groupMoonshotKey = document.getElementById('group-moonshot-key');
 const groupOllamaSettings = document.getElementById('group-ollama-settings');
-const groupOllamaLocalSettings = document.getElementById('group-ollama-local-settings');
-const inputOllamaLocalEndpoint = document.getElementById('input-ollama-local-endpoint');
-const inputOllamaLocalNumCtx = document.getElementById('input-ollama-local-num-ctx');
-const btnRefreshOllamaLocalModels = document.getElementById('btn-refresh-ollama-local-models');
-const ollamaLocalStatus = document.getElementById('ollama-local-status');
 const groupLmstudioLocalSettings = document.getElementById('group-lmstudio-local-settings');
 const inputLmstudioEndpoint = document.getElementById('input-lmstudio-endpoint');
 const btnRefreshLmstudioModels = document.getElementById('btn-refresh-lmstudio-models');

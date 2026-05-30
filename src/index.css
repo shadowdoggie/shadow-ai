@@ -951,9 +951,16 @@ html, body {
 
 /* Onboarding Modal specifics */
 .onboarding-card {
-  padding: 3rem;
+  padding: 2.25rem 2.5rem;
   text-align: center;
   max-width: 500px;
+  max-height: 90vh;
+  max-height: 90dvh;
+  overflow-y: auto;
+}
+
+.onboarding-card .onboarding-logo {
+  margin-bottom: 1.25rem;
 }
 
 .onboarding-logo {
@@ -1614,4 +1621,126 @@ select option {
   color: var(--text-muted);
   font-size: 0.9rem;
   padding: 0.5rem 0;
+}
+
+/* Update-available toast (bottom-right, non-modal) */
+.update-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 1200;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  background: rgba(20, 22, 30, 0.96);
+  border: 1px solid var(--border-light);
+  border-radius: 16px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(12px);
+  animation: update-toast-in 0.35s ease;
+}
+
+.update-toast.hidden {
+  display: none;
+}
+
+@keyframes update-toast-in {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.update-toast-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.update-toast-icon {
+  color: var(--accent, #7aa2ff);
+  font-size: 1.1rem;
+  line-height: 1.4;
+}
+
+.update-toast-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.update-toast-text strong {
+  color: var(--text-primary);
+  font-size: 0.98rem;
+}
+
+.update-toast-text span {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.update-toast-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.update-toast-actions .primary-button,
+.update-toast-actions .secondary-button {
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  text-decoration: none;
+  text-align: center;
+}
+
+/* Onboarding multi-step wizard */
+.onboarding-steps {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin: 4px 0 18px;
+}
+
+.onboarding-step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border-light);
+  transition: background 0.25s ease, transform 0.25s ease;
+}
+
+.onboarding-step-dot.active {
+  background: var(--accent, #7aa2ff);
+  transform: scale(1.25);
+}
+
+.onboarding-step {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.onboarding-step.hidden {
+  display: none;
+}
+
+.onboarding-nav {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 22px;
+}
+
+.onboarding-nav .primary-button,
+.onboarding-nav .secondary-button,
+.onboarding-nav .large-button {
+  flex: 1;
+}
+
+#onboarding-detect-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
 }

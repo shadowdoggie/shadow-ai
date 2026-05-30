@@ -2722,89 +2722,6 @@ try {
                 }
             }
 
-            # List models installed in a local Ollama instance (for the subagent model picker).
-            # Server-side GET so the browser never has to deal with Ollama CORS.
-            if ($urlPath -eq "/api/ollama/local/models") {
-                if ($request.HttpMethod -eq "OPTIONS") {
-                    Add-ShadowCorsOrigin $response
-                    $response.Headers.Add("Access-Control-Allow-Methods", "GET, OPTIONS")
-                    $response.Headers.Add("Access-Control-Allow-Headers", "Content-Type")
-                    $response.StatusCode = 200
-                    $response.Close()
-                    continue
-                }
-                if ($request.HttpMethod -eq "GET") {
-                    $ollamaEndpoint = $request.QueryString["endpoint"]
-                    if ([string]::IsNullOrWhiteSpace($ollamaEndpoint)) { $ollamaEndpoint = "http://localhost:11434" }
-                    $ollamaEndpoint = $ollamaEndpoint.TrimEnd('/')
-                    # Safety: only allow loopback http endpoints — this runs server-side, so we must
-                    # not let it become an open GET proxy to arbitrary hosts.
-                    $loopbackOk = $false
-                    try {
-                        $parsedEndpoint = [System.Uri]$ollamaEndpoint
-                        if ($parsedEndpoint.Scheme -eq 'http' -and @('localhost','127.0.0.1','::1') -contains $parsedEndpoint.Host) { $loopbackOk = $true }
-                    } catch {}
-                    if (-not $loopbackOk) {
-                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; models = @(); error = "Only local (loopback) Ollama endpoints are allowed, e.g. http://localhost:11434." }) 400
-                        continue
-                    }
-                    try {
-                        $ollamaTags = Invoke-RestMethod -Uri "$ollamaEndpoint/api/tags" -Method GET -TimeoutSec 5
-                        $ollamaModels = @()
-                        if ($ollamaTags -and $ollamaTags.models) {
-                            $ollamaModels = @($ollamaTags.models | ForEach-Object { $_.name } | Where-Object { $_ })
-                        }
-                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; endpoint = $ollamaEndpoint; models = $ollamaModels }) 200
-                    } catch {
-                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; endpoint = $ollamaEndpoint; models = @(); error = "Could not reach Ollama at $ollamaEndpoint. Make sure Ollama is installed and running."; hint = "Install from https://ollama.com/download, run 'ollama pull <model>' (e.g. llama3.1), then click Refresh." }) 502
-                    }
-                    continue
-                }
-                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405
-                continue
-            }
-
-            # List models currently LOADED in a local Ollama (via /api/ps) so the UI can warn
-            # that a cold model may take a moment to load on the first request.
-            if ($urlPath -eq "/api/ollama/local/ps") {
-                if ($request.HttpMethod -eq "OPTIONS") {
-                    Add-ShadowCorsOrigin $response
-                    $response.Headers.Add("Access-Control-Allow-Methods", "GET, OPTIONS")
-                    $response.Headers.Add("Access-Control-Allow-Headers", "Content-Type")
-                    $response.StatusCode = 200
-                    $response.Close()
-                    continue
-                }
-                if ($request.HttpMethod -eq "GET") {
-                    $ollamaEndpoint = $request.QueryString["endpoint"]
-                    if ([string]::IsNullOrWhiteSpace($ollamaEndpoint)) { $ollamaEndpoint = "http://localhost:11434" }
-                    $ollamaEndpoint = $ollamaEndpoint.TrimEnd('/')
-                    $loopbackOk = $false
-                    try {
-                        $parsedEndpoint = [System.Uri]$ollamaEndpoint
-                        if ($parsedEndpoint.Scheme -eq 'http' -and @('localhost','127.0.0.1','::1') -contains $parsedEndpoint.Host) { $loopbackOk = $true }
-                    } catch {}
-                    if (-not $loopbackOk) {
-                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; models = @(); error = "Only local (loopback) Ollama endpoints are allowed." }) 400
-                        continue
-                    }
-                    try {
-                        $ollamaPs = Invoke-RestMethod -Uri "$ollamaEndpoint/api/ps" -Method GET -TimeoutSec 4
-                        $loadedModels = @()
-                        if ($ollamaPs -and $ollamaPs.models) {
-                            $loadedModels = @($ollamaPs.models | ForEach-Object { $_.name } | Where-Object { $_ })
-                        }
-                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; endpoint = $ollamaEndpoint; models = $loadedModels }) 200
-                    } catch {
-                        # Can't determine loaded state — return error so the caller stays silent rather than guessing.
-                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; endpoint = $ollamaEndpoint; models = @(); error = "Could not query Ollama loaded-model state." }) 502
-                    }
-                    continue
-                }
-                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405
-                continue
-            }
-
             # List models available in a local LM Studio server (OpenAI-style /v1/models) for the
             # subagent model picker. Server-side GET so the browser never deals with CORS.
             if ($urlPath -eq "/api/lmstudio/models") {
@@ -2889,6 +2806,59 @@ try {
                     continue
                 }
                 Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405
+                continue
+            }
+
+            # Update check: compare the installed version to the latest GitHub release.
+            # Returns 200 even on failure (with status=error) so the UI can silently skip
+            # the check when offline rather than surfacing an error to the user.
+            if ($urlPath -eq "/api/update-check") {
+                if ($request.HttpMethod -ne "GET") {
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405
+                    continue
+                }
+                $currentVersion = ""
+                try {
+                    $pkgPath = Join-Path $scriptDir "package.json"
+                    if (Test-Path $pkgPath) {
+                        $pkg = Get-Content $pkgPath -Raw | ConvertFrom-Json
+                        if ($pkg -and $pkg.version) { $currentVersion = [string]$pkg.version }
+                    }
+                } catch {}
+                try {
+                    $ghHeaders = @{ "User-Agent" = "ShadowAI-UpdateCheck"; "Accept" = "application/vnd.github+json" }
+                    $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/shadowdoggie/shadow-ai/releases/latest" -Method GET -Headers $ghHeaders -TimeoutSec 8
+                    $latestTag = ""
+                    if ($rel -and $rel.tag_name) { $latestTag = [string]$rel.tag_name }
+                    $releaseUrl = ""
+                    if ($rel -and $rel.html_url) { $releaseUrl = [string]$rel.html_url }
+                    $releaseName = ""
+                    if ($rel -and $rel.name) { $releaseName = [string]$rel.name }
+                    # Prefer the installer asset's direct download URL when present.
+                    $assetUrl = ""
+                    if ($rel -and $rel.assets) {
+                        $exeAsset = $rel.assets | Where-Object { $_.name -and $_.name -like "*.exe" } | Select-Object -First 1
+                        if ($exeAsset -and $exeAsset.browser_download_url) { $assetUrl = [string]$exeAsset.browser_download_url }
+                    }
+                    $updateAvailable = $false
+                    $curV = $null; $latV = $null
+                    $curClean = ($currentVersion -replace '^[vV]', '')
+                    $latClean = ($latestTag -replace '^[vV]', '')
+                    if ([version]::TryParse($curClean, [ref]$curV) -and [version]::TryParse($latClean, [ref]$latV)) {
+                        $updateAvailable = ($latV -gt $curV)
+                    }
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{
+                        status = "success"
+                        current = $currentVersion
+                        latest = $latestTag
+                        update_available = $updateAvailable
+                        release_url = $releaseUrl
+                        release_name = $releaseName
+                        download_url = $assetUrl
+                    }) 200
+                } catch {
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; current = $currentVersion; update_available = $false; error = "Could not reach GitHub to check for updates." }) 200
+                }
                 continue
             }
 

@@ -1884,9 +1884,7 @@ async function connect() {
             sendLiveToolResponse(currentSocket, thisConnectionAttemptId, call.id, {
                 status: routed.status || 'spawned',
                 subagent_id: routed.subagent_id,
-              message: routed.model_loading
-                ? 'Background work started, but the local AI model still has to load into memory first, which can take a little bit. Say this naturally in first person: that you started on it in the background and the local model is just warming up, so the first step may take a moment. Do not repeat the internal task prompt or quote the delegated instructions.'
-                : 'Background work started. Say this in first person: "I started working on it in the background." Do not repeat the internal task prompt or quote the delegated instructions.',
+              message: 'Background work started. Say this in first person: "I started working on it in the background." Do not repeat the internal task prompt or quote the delegated instructions.',
                 refined_by_subagent_model: smartMainRoutingEnabled
             });
             markToolResponseFollowupPending('spawn_background_agent');

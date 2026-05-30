@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="index.css?v=voice-favorites-20260526">
+  <link rel="stylesheet" href="index.css?v=release150c-20260530">
 </head>
 <body>
 
@@ -237,7 +237,7 @@
         <div class="form-group">
           <label>Subagent Prompt Brain</label>
           <label class="checkbox-row" for="input-smart-main-routing-enabled">
-            <input type="checkbox" id="input-smart-main-routing-enabled" checked>
+            <input type="checkbox" id="input-smart-main-routing-enabled">
             <span>Refine subagent prompts and steering with the selected subagent model</span>
           </label>
           <span class="field-hint" style="display:block;margin-top:4px;">Gemini stays direct for normal chat. When starting or steering a background subagent, the selected subagent provider/model rewrites the task first.</span>
@@ -285,7 +285,6 @@
             <option value="minimax">MiniMax API</option>
             <option value="moonshot">Canopy Wave API</option>
             <option value="ollama">Ollama Cloud</option>
-            <option value="ollama_local">Ollama (Local)</option>
             <option value="lmstudio_local">LM Studio (Local)</option>
             <option value="custom_openai">Custom (OpenAI-compatible)</option>
           </select>
@@ -334,10 +333,6 @@
             <option value="devstral-small-2">Devstral Small 2 24B (vision, tools)</option>
           </select>
 
-          <select id="select-subagent-model-ollama-local" class="subagent-model-select" style="display: none;">
-            <option value="">No local models found</option>
-          </select>
-
           <select id="select-subagent-model-lmstudio-local" class="subagent-model-select" style="display: none;">
             <option value="">No LM Studio models found</option>
           </select>
@@ -383,23 +378,6 @@
           <input type="password" id="input-ollama-key" placeholder="Enter Ollama Cloud API Key" autocomplete="off">
         </div>
 
-        <div class="form-group" id="group-ollama-local-settings" style="display: none;">
-          <label for="input-ollama-local-endpoint">Local Ollama Endpoint</label>
-          <input type="text" id="input-ollama-local-endpoint" placeholder="http://localhost:11434" autocomplete="off">
-          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
-            <button id="btn-refresh-ollama-local-models" class="secondary-button" type="button">Refresh models</button>
-            <span id="ollama-local-status" class="field-hint" style="margin:0;">No model loaded yet.</span>
-          </div>
-          <label for="input-ollama-local-num-ctx" style="display:block;margin-top:12px;">Context size (num_ctx)</label>
-          <input type="number" id="input-ollama-local-num-ctx" min="512" step="512" placeholder="8192" autocomplete="off">
-          <span class="field-hint" style="display:block;margin-top:4px;">
-            How much context the model loads. <strong>Smaller = loads faster and uses far less VRAM.</strong> 4096–8192 is plenty for most tasks; large values can make the model slow to load and eat your VRAM. Applies to local Ollama only.
-          </span>
-          <span class="field-hint" style="display:block;margin-top:6px;">
-            Runs against your own machine — no API key, fully offline. Install <a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer" style="color:#00f2fe;">Ollama</a>, run a model (e.g. <code>ollama pull llama3.1</code>), then click Refresh to pick it. The model list is auto-detected from your running Ollama.
-          </span>
-        </div>
-
         <div class="form-group" id="group-lmstudio-local-settings" style="display: none;">
           <label for="input-lmstudio-endpoint">LM Studio Server URL</label>
           <input type="text" id="input-lmstudio-endpoint" placeholder="http://localhost:1234/v1" autocomplete="off">
@@ -409,6 +387,9 @@
           </div>
           <span class="field-hint" style="display:block;margin-top:6px;">
             Runs against your own machine via LM Studio's local server — no API key. In <a href="https://lmstudio.ai/" target="_blank" rel="noopener noreferrer" style="color:#00f2fe;">LM Studio</a>, load a model and start the server (Developer tab), then click Refresh. The model list is auto-detected. Set the model's <strong>context length and parallelism inside LM Studio</strong> when you load it (LM Studio handles parallel requests, default 4).
+          </span>
+          <span class="field-hint" style="display:block;margin-top:6px;color:#ffcf6b;">
+            ⚠️ Load the model with a <strong>context length of at least ~8,000 tokens</strong> in LM Studio. Shadow's subagent system prompt and tools are large, so very small contexts (e.g. 512) fail immediately. More context = more room for multi-step tasks.
           </span>
         </div>
 
@@ -425,7 +406,7 @@
             <span id="custom-status" class="field-hint" style="margin:0;">Enter your endpoint, then Fetch models (optional).</span>
           </div>
           <span class="field-hint" style="display:block;margin-top:6px;">
-            For any OpenAI-compatible server — <strong>llama.cpp</strong>, vLLM, text-generation-webui, a remote gateway, etc. Point at its base URL (usually ending in <code>/v1</code>). Shadow calls <code>/chat/completions</code> and tries <code>/models</code> to auto-fill the list; if your server doesn't expose <code>/models</code>, just type the model name. Set context length on the server side.
+            For any OpenAI-compatible server — <strong>llama.cpp</strong>, vLLM, text-generation-webui, a remote gateway, etc. Point at its base URL (usually ending in <code>/v1</code>). Shadow calls <code>/chat/completions</code> and tries <code>/models</code> to auto-fill the list; if your server doesn't expose <code>/models</code>, just type the model name. Set context length on the server side — use <strong>at least ~8,000 tokens</strong> (Shadow's subagent prompt + tools are large; tiny contexts fail immediately).
           </span>
         </div>
 
@@ -461,6 +442,16 @@
             <span style="color: var(--text-muted); font-size: 0.85rem;">minutes</span>
           </div>
           <span class="field-hint" style="display:block;margin-top:4px;">Backups are saved to the <code>backups</code> folder.</span>
+        </div>
+
+        <!-- App Updates -->
+        <div class="form-group">
+          <label>App Updates</label>
+          <label class="checkbox-row" for="input-auto-update-check">
+            <input type="checkbox" id="input-auto-update-check" checked>
+            <span>Check for updates on launch</span>
+          </label>
+          <span class="field-hint" style="display:block;margin-top:4px;">When a newer release is available, Shadow shows a one-time notice with a link to download the installer. Shadow never updates itself without your click.</span>
         </div>
 
         <!-- System Instruction / Personality Prompt -->
@@ -593,27 +584,115 @@
     </div>
   </div>
 
-  <!-- Onboarding / Welcome Modal -->
+  <!-- Onboarding / Welcome Modal (multi-step wizard) -->
   <div id="onboarding-modal" class="modal-overlay hidden">
     <div class="modal-card onboarding-card">
       <div class="onboarding-logo">
         <span class="pulse-ring"></span>
         <span class="logo-dot-large"></span>
       </div>
-      <h2 class="onboarding-title">Meet Shadow</h2>
-      <p class="onboarding-description">
-        Shadow is an conversational AI companion. 
-        She communicates strictly via voice in real-time, allowing you to have natural, 
-        uninterrupted flow, and can be spoken to just like a human companion.
-      </p>
-      
-      <div class="form-group onboarding-key-group">
-        <label for="onboarding-api-key">To get started, enter your Gemini API Key:</label>
-        <input type="password" id="onboarding-api-key" placeholder="AIzaSy..." autocomplete="off">
-        <span class="field-hint">Your key is stored locally in this browser and never uploaded elsewhere. Get one free at <a href="https://aistudio.google.com/" target="_blank">Google AI Studio</a>.</span>
+
+      <div class="onboarding-steps" id="onboarding-steps">
+        <span class="onboarding-step-dot active" data-step="1"></span>
+        <span class="onboarding-step-dot" data-step="2"></span>
+        <span class="onboarding-step-dot" data-step="3"></span>
       </div>
 
-      <button id="btn-get-started" class="primary-button large-button">Initialize Shadow</button>
+      <!-- STEP 1: Welcome + Gemini key -->
+      <div class="onboarding-step" data-step="1">
+        <h2 class="onboarding-title">Meet Shadow</h2>
+        <p class="onboarding-description">
+          Shadow is a voice-first AI companion. Talk to it naturally, in real time, in any language.
+          Let's get you set up &mdash; it takes about a minute.
+        </p>
+        <div class="form-group onboarding-key-group">
+          <label for="onboarding-api-key">Enter your Gemini API key to begin:</label>
+          <input type="password" id="onboarding-api-key" placeholder="AIzaSy..." autocomplete="off">
+          <span class="field-hint">Stored locally on this PC, never uploaded elsewhere. Get one free at <a href="https://aistudio.google.com/" target="_blank">Google AI Studio</a>.</span>
+        </div>
+      </div>
+
+      <!-- STEP 2: Personalize -->
+      <div class="onboarding-step hidden" data-step="2">
+        <h2 class="onboarding-title">Make it yours</h2>
+        <p class="onboarding-description">Set names and how Shadow sounds. You can change any of this later in Settings.</p>
+        <div class="form-group">
+          <label for="onboarding-user-name">Your name (optional)</label>
+          <input type="text" id="onboarding-user-name" placeholder="What should Shadow call you?" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="onboarding-assistant-name">Assistant name</label>
+          <input type="text" id="onboarding-assistant-name" placeholder="Shadow" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="onboarding-voice">Voice</label>
+          <select id="onboarding-voice"></select>
+        </div>
+        <div class="form-group">
+          <label for="onboarding-accent">Accent / speaking style</label>
+          <select id="onboarding-accent"></select>
+        </div>
+        <div class="form-group">
+          <label for="onboarding-thinking">Voice reasoning</label>
+          <select id="onboarding-thinking"></select>
+        </div>
+      </div>
+
+      <!-- STEP 3: Background helpers (subagents) -->
+      <div class="onboarding-step hidden" data-step="3">
+        <h2 class="onboarding-title">Background helpers</h2>
+        <p class="onboarding-description">
+          Shadow can spin up <strong>subagents</strong> for multi-step work in the background &mdash; research, coding, file tasks, and more.
+          By default they use your Gemini key, so there's nothing to set up. Prefer a local model? Point them at LM Studio, llama.cpp, or another provider.
+        </p>
+        <div class="form-group">
+          <label for="onboarding-subagent-provider">Subagent provider</label>
+          <select id="onboarding-subagent-provider"></select>
+        </div>
+        <div class="form-group hidden" id="onboarding-subagent-endpoint-group">
+          <label for="onboarding-subagent-endpoint">Server URL</label>
+          <input type="text" id="onboarding-subagent-endpoint" placeholder="http://localhost:1234/v1" autocomplete="off">
+          <span class="field-hint" id="onboarding-subagent-endpoint-hint">Use at least ~8,000 tokens of context on the server &mdash; Shadow's subagent prompt is large, so tiny contexts fail.</span>
+        </div>
+        <div class="form-group hidden" id="onboarding-subagent-key-group">
+          <label for="onboarding-subagent-key" id="onboarding-subagent-key-label">API key</label>
+          <input type="password" id="onboarding-subagent-key" placeholder="Enter API key" autocomplete="off">
+        </div>
+
+        <!-- OpenAI Codex one-time sign-in (openai_codex) -->
+        <div class="form-group hidden" id="onboarding-codex-group">
+          <label>OpenAI Codex Login</label>
+          <div class="codex-auth-row">
+            <div id="onboarding-codex-badge" class="integration-status-badge integration-disconnected">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span id="onboarding-codex-status-text">Disconnected</span>
+            </div>
+            <button id="btn-onboarding-codex-login" class="secondary-button" type="button">Login with Codex</button>
+          </div>
+          <span id="onboarding-codex-details" class="field-hint" style="display:block;margin-top:4px;">Opens a browser sign-in &mdash; complete it and come back; status updates automatically.</span>
+        </div>
+
+        <!-- Model selection (per provider) -->
+        <div class="form-group hidden" id="onboarding-model-group">
+          <label for="onboarding-subagent-model">Model</label>
+          <select id="onboarding-subagent-model"></select>
+          <input type="text" id="onboarding-subagent-model-text" class="hidden" list="onboarding-custom-models" placeholder="Model name (from your server)" autocomplete="off">
+          <datalist id="onboarding-custom-models"></datalist>
+          <div id="onboarding-detect-row" class="hidden">
+            <button id="btn-onboarding-detect-models" class="secondary-button" type="button">Detect models</button>
+            <span id="onboarding-model-status" class="field-hint" style="margin:0;"></span>
+          </div>
+        </div>
+
+        <p class="field-hint" id="onboarding-subagent-info" style="margin-top:4px;"></p>
+      </div>
+
+      <!-- Navigation -->
+      <div class="onboarding-nav">
+        <button id="btn-onboard-back" class="secondary-button hidden" type="button">Back</button>
+        <button id="btn-onboard-next" class="primary-button" type="button">Next</button>
+        <button id="btn-get-started" class="primary-button large-button hidden">Initialize Shadow</button>
+      </div>
     </div>
   </div>
 
@@ -631,6 +710,21 @@
           <a id="btn-credential-get-key" class="secondary-button credential-get-key" target="_blank" rel="noopener noreferrer">Get your key &rarr;</a>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Update-available toast (notify + one-click download; never auto-applies) -->
+  <div id="update-toast" class="update-toast hidden">
+    <div class="update-toast-body">
+      <span class="update-toast-icon" aria-hidden="true">&#9650;</span>
+      <div class="update-toast-text">
+        <strong id="update-toast-title">Update available</strong>
+        <span id="update-toast-subtitle">A newer version of Shadow is ready.</span>
+      </div>
+    </div>
+    <div class="update-toast-actions">
+      <a id="btn-update-now" class="primary-button" target="_blank" rel="noopener noreferrer">Update</a>
+      <button id="btn-update-later" class="secondary-button" type="button">Later</button>
     </div>
   </div>
 
@@ -698,17 +792,17 @@
   <video id="screen-video" autoplay playsinline style="display:none;"></video>
   <canvas id="screen-canvas" style="display:none;"></canvas>
 
-  <script src="scripts/01-state-dom.js?v=local-providers-20260530"></script>
-  <script src="scripts/02-boot-ui.js?v=local-providers-20260530"></script>
-  <script src="scripts/03-screen-config.js?v=local-providers-20260530"></script>
+  <script src="scripts/01-state-dom.js?v=release150b-20260530"></script>
+  <script src="scripts/02-boot-ui.js?v=release150b-20260530"></script>
+  <script src="scripts/03-screen-config.js?v=remove-ollama-local-20260530"></script>
   <script src="scripts/04-audio.js?v=audio-stall-recovery-20260528"></script>
-  <script src="scripts/05-live-connection.js?v=steer-async-20260530"></script>
+  <script src="scripts/05-live-connection.js?v=remove-ollama-local-20260530"></script>
   <script src="scripts/06-transcript.js?v=release-hardening-20260528"></script>
   <script src="scripts/07-visualizer.js?v=fix-20260521"></script>
   <script src="scripts/08-memory.js?v=steer-not-cancel-20260530"></script>
-  <script src="scripts/09-subagents-core.js?v=concurrent-refine-20260530"></script>
+  <script src="scripts/09-subagents-core.js?v=remove-ollama-local-20260530"></script>
   <script src="scripts/10-scheduler-proactive.js?v=reboot-truth-20260528"></script>
-  <script src="scripts/11-subagents-runner.js?v=concurrent-refine-20260530"></script>
+  <script src="scripts/11-subagents-runner.js?v=ctx-overflow-recovery-20260530"></script>
   <script src="scripts/12-subagents-notifications.js?v=cred-prompt-20260529"></script>
   <script src="scripts/13-google-workspace.js?v=upload-resilience-20260529"></script>
 </body>

@@ -619,9 +619,10 @@ function isEvidenceRequiredForSubagentSuccess(task) {
 function getSubagentFinishReadiness(task, finalStatus, verification, subagentRecord) {
   const status = String(finalStatus || '').toLowerCase();
   if (status !== 'success') return { ok: true, reason: '' };
-  // Local models are weak at producing a separate verification step; accept any successful
-  // tool action as sufficient evidence so simple tasks can actually finish instead of looping.
-  if (subagentRecord && subagentRecord.provider === 'ollama_local' && (Number(subagentRecord.successfulToolCount) || 0) > 0) {
+  // Local models (LM Studio / custom endpoints) are weak at producing a separate verification
+  // step; accept any successful tool action as sufficient evidence so simple tasks can actually
+  // finish instead of looping (and growing the prompt past their context).
+  if (subagentRecord && (subagentRecord.provider === 'lmstudio_local' || subagentRecord.provider === 'custom_openai') && (Number(subagentRecord.successfulToolCount) || 0) > 0) {
     return { ok: true, reason: '', evidence: getSubagentEvidenceSummary(subagentRecord, 6) };
   }
   if (!isEvidenceRequiredForSubagentSuccess(task)) return { ok: true, reason: '' };
