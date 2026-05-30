@@ -341,6 +341,11 @@ async function loadConfigFromServer() {
       localStorage.setItem('shadow_ollama_key', ollamaApiKey);
       inputOllamaKey.value = ollamaApiKey;
     }
+    if (config.shadow_ollama_local_endpoint) {
+      ollamaLocalEndpoint = config.shadow_ollama_local_endpoint;
+      localStorage.setItem('shadow_ollama_local_endpoint', ollamaLocalEndpoint);
+      if (inputOllamaLocalEndpoint) inputOllamaLocalEndpoint.value = ollamaLocalEndpoint;
+    }
     if (config.shadow_searxng_url !== undefined) {
       searxngSearchUrl = config.shadow_searxng_url || 'http://127.0.0.1/search';
       localStorage.setItem('shadow_searxng_url', searxngSearchUrl);
@@ -774,7 +779,7 @@ async function applyShadowSettingsUpdate(args = {}) {
 
   const nextProvider = valueOrCurrent(requestedArgs.subagent_provider, subagentProvider).toLowerCase();
   if (nextProvider !== subagentProvider) {
-    if (['gemini', OPENAI_CODEX_PROVIDER, 'minimax', 'moonshot', 'ollama'].includes(nextProvider)) {
+    if (['gemini', OPENAI_CODEX_PROVIDER, 'minimax', 'moonshot', 'ollama', 'ollama_local'].includes(nextProvider)) {
       subagentProvider = nextProvider;
       localStorage.setItem('shadow_subagent_provider', subagentProvider);
       if (selectSubagentProvider) {
@@ -796,6 +801,7 @@ async function applyShadowSettingsUpdate(args = {}) {
     else if (subagentProvider === 'minimax' && selectSubagentModelMinimax) selectSubagentModelMinimax.value = subagentModel;
     else if (subagentProvider === 'moonshot' && selectSubagentModelMoonshot) selectSubagentModelMoonshot.value = subagentModel;
     else if (subagentProvider === 'ollama' && selectSubagentModelOllama) selectSubagentModelOllama.value = subagentModel;
+    else if (subagentProvider === 'ollama_local' && selectSubagentModelOllamaLocal) selectSubagentModelOllamaLocal.value = subagentModel;
     changed.push('subagent model');
   }
 

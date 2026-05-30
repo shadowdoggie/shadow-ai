@@ -271,16 +271,57 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  function setOllamaLocalStatus(msg, isError) {
+    if (!ollamaLocalStatus) return;
+    ollamaLocalStatus.textContent = msg;
+    ollamaLocalStatus.style.color = isError ? '#ff6b6b' : 'rgba(255,255,255,0.6)';
+  }
+
+  // Auto-detect models installed in the user's local Ollama and fill the picker.
+  async function refreshOllamaLocalModels(preferredModel) {
+    if (!selectSubagentModelOllamaLocal) return;
+    const endpoint = (inputOllamaLocalEndpoint && inputOllamaLocalEndpoint.value.trim()) || ollamaLocalEndpoint || 'http://localhost:11434';
+    const want = preferredModel || (subagentProvider === 'ollama_local' ? subagentModel : '') || selectSubagentModelOllamaLocal.value;
+    setOllamaLocalStatus('Detecting installed models…', false);
+    try {
+      const res = await fetchLocalApiWithTimeout(`/api/ollama/local/models?endpoint=${encodeURIComponent(endpoint)}`, {}, LOCAL_API_TIMEOUT_MS);
+      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
+      const models = (data && Array.isArray(data.models)) ? data.models : [];
+      selectSubagentModelOllamaLocal.innerHTML = '';
+      if (!models.length) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'No local models found';
+        selectSubagentModelOllamaLocal.appendChild(opt);
+        setOllamaLocalStatus((data && (data.error || data.hint)) ? (data.error || data.hint) : 'No models found. Run "ollama pull <model>" then Refresh.', true);
+        return;
+      }
+      for (const name of models) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        selectSubagentModelOllamaLocal.appendChild(opt);
+      }
+      if (want && models.includes(want)) selectSubagentModelOllamaLocal.value = want;
+      setOllamaLocalStatus(`Found ${models.length} model${models.length === 1 ? '' : 's'}. Pick one and Save.`, false);
+    } catch (err) {
+      selectSubagentModelOllamaLocal.innerHTML = '<option value="">No local models found</option>';
+      setOllamaLocalStatus('Could not reach Ollama. Make sure it is installed and running, then Refresh.', true);
+    }
+  }
+
   function updateProviderUI() {
     groupMinimaxKey.style.display = 'none';
     groupMoonshotKey.style.display = 'none';
     groupOllamaSettings.style.display = 'none';
+    if (groupOllamaLocalSettings) groupOllamaLocalSettings.style.display = 'none';
     groupOpenaiCodexAuth.style.display = 'none';
     selectSubagentModelGemini.style.display = 'none';
     selectSubagentModelOpenaiCodex.style.display = 'none';
     selectSubagentModelMinimax.style.display = 'none';
     selectSubagentModelMoonshot.style.display = 'none';
     selectSubagentModelOllama.style.display = 'none';
+    if (selectSubagentModelOllamaLocal) selectSubagentModelOllamaLocal.style.display = 'none';
 
     const prov = selectSubagentProvider.value;
     if (prov === 'gemini') selectSubagentModelGemini.style.display = 'block';
@@ -292,10 +333,22 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (prov === 'minimax') { groupMinimaxKey.style.display = 'block'; selectSubagentModelMinimax.style.display = 'block'; }
     if (prov === 'moonshot') { groupMoonshotKey.style.display = 'block'; selectSubagentModelMoonshot.style.display = 'block'; }
     if (prov === 'ollama') { groupOllamaSettings.style.display = 'block'; selectSubagentModelOllama.style.display = 'block'; }
+    if (prov === 'ollama_local') {
+      if (groupOllamaLocalSettings) groupOllamaLocalSettings.style.display = 'block';
+      if (selectSubagentModelOllamaLocal) selectSubagentModelOllamaLocal.style.display = 'block';
+      if (inputOllamaLocalEndpoint) inputOllamaLocalEndpoint.value = ollamaLocalEndpoint;
+      refreshOllamaLocalModels();
+    }
     updateCodexReasoningUI();
   }
   updateProviderUI();
   selectSubagentProvider.addEventListener('change', updateProviderUI);
+  if (btnRefreshOllamaLocalModels) {
+    btnRefreshOllamaLocalModels.addEventListener('click', () => {
+      if (inputOllamaLocalEndpoint) ollamaLocalEndpoint = inputOllamaLocalEndpoint.value.trim() || 'http://localhost:11434';
+      refreshOllamaLocalModels();
+    });
+  }
   if (selectSubagentModelOpenaiCodex) {
     selectSubagentModelOpenaiCodex.addEventListener('change', updateCodexReasoningUI);
   }
@@ -454,7 +507,11 @@ window.addEventListener('DOMContentLoaded', async () => {
       else if (subagentProvider === 'minimax') subagentModel = selectSubagentModelMinimax.value;
       else if (subagentProvider === 'moonshot') subagentModel = selectSubagentModelMoonshot.value;
       else if (subagentProvider === 'ollama') subagentModel = selectSubagentModelOllama.value;
+      else if (subagentProvider === 'ollama_local') subagentModel = selectSubagentModelOllamaLocal ? selectSubagentModelOllamaLocal.value : '';
       else subagentModel = '';
+      if (inputOllamaLocalEndpoint) {
+        ollamaLocalEndpoint = inputOllamaLocalEndpoint.value.trim() || 'http://localhost:11434';
+      }
       if (selectSubagentReasoningMode) {
         const requestedReasoningMode = selectSubagentReasoningMode.value;
         subagentReasoningMode = OPENAI_CODEX_REASONING_MODES.has(requestedReasoningMode) ? requestedReasoningMode : 'medium';
@@ -475,6 +532,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       localStorage.setItem('shadow_moonshot_key', moonshotApiKey);
 
       localStorage.setItem('shadow_ollama_key', ollamaApiKey);
+      localStorage.setItem('shadow_ollama_local_endpoint', ollamaLocalEndpoint);
       localStorage.setItem('shadow_searxng_url', searxngSearchUrl);
       localStorage.setItem('shadow_searxng_port', searxngSearchPort);
 

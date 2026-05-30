@@ -750,6 +750,11 @@ async function ensureReusableLearningArtifact(task, subagentRecord, finalText) {
   return result;
 }
 
+function getOllamaLocalBase() {
+  const ep = (typeof ollamaLocalEndpoint !== 'undefined' && ollamaLocalEndpoint) ? ollamaLocalEndpoint : 'http://localhost:11434';
+  return String(ep).replace(/\/+$/, '');
+}
+
 function getSmartConsultModel() {
   const codexProvider = typeof OPENAI_CODEX_PROVIDER === 'undefined' ? 'openai_codex' : OPENAI_CODEX_PROVIDER;
   const provider = typeof subagentProvider === 'undefined' ? codexProvider : subagentProvider;
@@ -764,6 +769,7 @@ function getSmartConsultModel() {
   if (provider === 'minimax') return configuredModel || 'minimax-m2.7';
   if (provider === 'moonshot') return configuredModel || 'moonshotai/kimi-k2.6';
   if (provider === 'ollama') return configuredModel || 'deepseek-v3.1:671b-cloud';
+  if (provider === 'ollama_local') return configuredModel || '';
   return configuredModel || 'gpt-5.5';
 }
 
@@ -1059,6 +1065,20 @@ async function runSubagentPromptRefinement(args = {}) {
       const json = await readFetchResponseJsonWithTimeout(response, SMART_CONSULT_MODEL_TIMEOUT_MS, refineRecord);
       if (!response.ok) throw new Error(`Subagent prompt refinement failed: HTTP ${response.status}. ${JSON.stringify(json).slice(0, 500)}`);
       refined = extractTextFromOllamaChatResponse(json);
+    } else if (provider === 'ollama_local') {
+      if (!targetModel) throw new Error('No local Ollama model selected. Open Settings and pick a model (Subagent Provider: Ollama (Local)).');
+      response = await fetchWithTimeout('/api/proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: `${getOllamaLocalBase()}/api/chat`,
+          headers: { 'Content-Type': 'application/json' },
+          body: createChatSubagentPromptRefinementPayload(args, targetModel)
+        })
+      }, SMART_CONSULT_MODEL_TIMEOUT_MS, refineRecord);
+      const json = await readFetchResponseJsonWithTimeout(response, SMART_CONSULT_MODEL_TIMEOUT_MS, refineRecord);
+      if (!response.ok) throw new Error(`Subagent prompt refinement failed: HTTP ${response.status}. ${JSON.stringify(json).slice(0, 500)}`);
+      refined = extractTextFromOllamaChatResponse(json);
     } else {
       let endpointUrl = '';
       const headers = { 'Content-Type': 'application/json' };
@@ -1175,6 +1195,23 @@ async function runSmartConsult(args = {}) {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${ollamaApiKey}`
           },
+          body: createOllamaSmartConsultPayload(args, targetModel)
+        })
+      }, SMART_CONSULT_MODEL_TIMEOUT_MS, consultRecord);
+      const json = await readFetchResponseJsonWithTimeout(response, SMART_CONSULT_MODEL_TIMEOUT_MS, consultRecord);
+      if (!response.ok) {
+        throw new Error(`Smart model request failed: HTTP ${response.status}. ${JSON.stringify(json).slice(0, 500)}`);
+      }
+      answer = extractTextFromOllamaChatResponse(json);
+      reasoningEffort = 'provider-default';
+    } else if (provider === 'ollama_local') {
+      if (!targetModel) throw new Error('No local Ollama model selected. Open Settings and pick a model (Subagent Provider: Ollama (Local)).');
+      response = await fetchWithTimeout('/api/proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: `${getOllamaLocalBase()}/api/chat`,
+          headers: { 'Content-Type': 'application/json' },
           body: createOllamaSmartConsultPayload(args, targetModel)
         })
       }, SMART_CONSULT_MODEL_TIMEOUT_MS, consultRecord);
@@ -1812,6 +1849,10 @@ When finished, you MUST call finish_task with status="success" only if the reque
             endpointUrl = 'https://ollama.com/v1/chat/completions';
             headers['Authorization'] = `Bearer ${ollamaApiKey}`;
             payload.model = subagentModel || 'deepseek-v3.1:671b-cloud';
+          } else if (subagentProvider === 'ollama_local') {
+            if (!subagentModel) throw new Error('No local Ollama model selected. Open Settings and pick a model (Subagent Provider: Ollama (Local)).');
+            endpointUrl = `${getOllamaLocalBase()}/v1/chat/completions`;
+            payload.model = subagentModel;
           }
         }
 

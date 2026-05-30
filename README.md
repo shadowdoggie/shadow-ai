@@ -62,9 +62,14 @@ See **[SETUP.md](SETUP.md)** for full install, developer, and build-from-source 
 
 No promises or timelines, but here's where my head's at right now:
 
-- **Local LLM support — current priority.** Running the assistant against models you host
-  yourself, via both a **local Ollama** backend and a **custom (OpenAI-compatible) endpoint**
-  provider, so you can point Shadow at your own machine or your own inference server.
+- **Local LLM for subagents — ✅ shipped (v1.1.0).** Background subagents can now run on a
+  **local Ollama** instance on your own machine (no API key, fully offline). The model list
+  is auto-detected from your running Ollama — just install it, pull a model, and pick it in
+  Settings.
+- **Custom (OpenAI-compatible) endpoint — current priority.** Next up: point subagents at
+  any OpenAI-compatible endpoint (your own inference server, LM Studio, vLLM, etc.).
+- **Local voice model — in progress.** Bringing local models to the realtime voice path too,
+  not just subagents.
 - **Local TTS — eventually.** Looking at **Qwen3-TTS** as a possible fully-local
   text-to-speech option down the line.
 

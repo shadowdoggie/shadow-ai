@@ -407,8 +407,38 @@ describe('voice setting session behavior', () => {
     expect(indexHtml).toContain('input-assistant-name');
     expect(indexHtml).toContain('Subagent Prompt Brain');
     expect(indexHtml).toContain('Refine subagent prompts and steering with the selected subagent model');
-    expect(indexHtml).toContain('01-state-dom.js?v=voice-reasoning-low-20260530');
-    expect(indexHtml).toContain('11-subagents-runner.js?v=subagent-31lite-20260529');
+    expect(indexHtml).toContain('01-state-dom.js?v=ollama-local-20260530');
+    expect(indexHtml).toContain('11-subagents-runner.js?v=ollama-local-20260530');
+  });
+
+  it('offers a local Ollama subagent provider with an auto-detected model picker', () => {
+    const indexHtml = fs.readFileSync(path.join(process.cwd(), 'src', 'index.html'), 'utf8');
+    const stateDom = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '01-state-dom.js'), 'utf8');
+    const bootUi = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '02-boot-ui.js'), 'utf8');
+    const runner = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '11-subagents-runner.js'), 'utf8');
+    const runPs1 = fs.readFileSync(path.join(process.cwd(), 'run.ps1'), 'utf8');
+
+    // UI: provider option, dynamic model select, endpoint + refresh controls.
+    expect(indexHtml).toContain('<option value="ollama_local">Ollama (Local)</option>');
+    expect(indexHtml).toContain('select-subagent-model-ollama-local');
+    expect(indexHtml).toContain('input-ollama-local-endpoint');
+    expect(indexHtml).toContain('btn-refresh-ollama-local-models');
+
+    // State + boot wiring: endpoint persisted, models auto-fetched.
+    expect(stateDom).toContain("localStorage.getItem('shadow_ollama_local_endpoint')");
+    expect(bootUi).toContain('refreshOllamaLocalModels');
+    expect(bootUi).toContain('/api/ollama/local/models?endpoint=');
+    expect(bootUi).toContain("localStorage.setItem('shadow_ollama_local_endpoint', ollamaLocalEndpoint)");
+
+    // Runner: local routing to the user's own Ollama, no API key, no cloud host.
+    expect(runner).toContain("provider === 'ollama_local'");
+    expect(runner).toContain("subagentProvider === 'ollama_local'");
+    expect(runner).toContain('getOllamaLocalBase()');
+    expect(runner).toContain('/v1/chat/completions');
+
+    // Backend: server-side model-list endpoint, restricted to loopback.
+    expect(runPs1).toContain('/api/ollama/local/models');
+    expect(runPs1).toContain('/api/tags');
   });
 
   it('wires Subagent Prompt Brain refinement through settings and the selected subagent model', () => {
@@ -920,8 +950,8 @@ describe('voice setting session behavior', () => {
     expect(screenConfig).not.toContain('hey shadow');
     expect(bootUi).not.toContain('startWakeWordListener();');
     expect(liveConnection).not.toContain('startWakeWordListener();');
-    expect(indexHtml).toContain('02-boot-ui.js?v=file-resolve-20260529');
-    expect(indexHtml).toContain('03-screen-config.js?v=user-name-20260529');
+    expect(indexHtml).toContain('02-boot-ui.js?v=ollama-local-20260530');
+    expect(indexHtml).toContain('03-screen-config.js?v=ollama-local-20260530');
     expect(indexHtml).toContain('05-live-connection.js?v=upload-resilience-20260529');
     expect(indexHtml).toContain('08-memory.js?v=upload-resilience-20260529');
     expect(indexHtml).toContain('10-scheduler-proactive.js?v=reboot-truth-20260528');

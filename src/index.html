@@ -285,6 +285,7 @@
             <option value="minimax">MiniMax API</option>
             <option value="moonshot">Canopy Wave API</option>
             <option value="ollama">Ollama Cloud</option>
+            <option value="ollama_local">Ollama (Local)</option>
           </select>
         </div>
         
@@ -330,6 +331,10 @@
             <option value="ministral-3">Ministral 3 (vision, tools)</option>
             <option value="devstral-small-2">Devstral Small 2 24B (vision, tools)</option>
           </select>
+
+          <select id="select-subagent-model-ollama-local" class="subagent-model-select" style="display: none;">
+            <option value="">No local models found</option>
+          </select>
         </div>
 
         <div class="form-group" id="group-subagent-reasoning-mode" style="display: none;">
@@ -370,6 +375,18 @@
         <div class="form-group" id="group-ollama-settings" style="display: none;">
           <label for="input-ollama-key">Ollama Cloud API Key</label>
           <input type="password" id="input-ollama-key" placeholder="Enter Ollama Cloud API Key" autocomplete="off">
+        </div>
+
+        <div class="form-group" id="group-ollama-local-settings" style="display: none;">
+          <label for="input-ollama-local-endpoint">Local Ollama Endpoint</label>
+          <input type="text" id="input-ollama-local-endpoint" placeholder="http://localhost:11434" autocomplete="off">
+          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
+            <button id="btn-refresh-ollama-local-models" class="secondary-button" type="button">Refresh models</button>
+            <span id="ollama-local-status" class="field-hint" style="margin:0;">No model loaded yet.</span>
+          </div>
+          <span class="field-hint" style="display:block;margin-top:6px;">
+            Runs against your own machine — no API key, fully offline. Install <a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer" style="color:#00f2fe;">Ollama</a>, run a model (e.g. <code>ollama pull llama3.1</code>), then click Refresh to pick it. The model list is auto-detected from your running Ollama.
+          </span>
         </div>
 
         <!-- SearXNG Search Configuration -->
@@ -641,9 +658,9 @@
   <video id="screen-video" autoplay playsinline style="display:none;"></video>
   <canvas id="screen-canvas" style="display:none;"></canvas>
 
-  <script src="scripts/01-state-dom.js?v=voice-reasoning-low-20260530"></script>
-  <script src="scripts/02-boot-ui.js?v=file-resolve-20260529"></script>
-  <script src="scripts/03-screen-config.js?v=user-name-20260529"></script>
+  <script src="scripts/01-state-dom.js?v=ollama-local-20260530"></script>
+  <script src="scripts/02-boot-ui.js?v=ollama-local-20260530"></script>
+  <script src="scripts/03-screen-config.js?v=ollama-local-20260530"></script>
   <script src="scripts/04-audio.js?v=audio-stall-recovery-20260528"></script>
   <script src="scripts/05-live-connection.js?v=upload-resilience-20260529"></script>
   <script src="scripts/06-transcript.js?v=release-hardening-20260528"></script>
@@ -651,7 +668,7 @@
   <script src="scripts/08-memory.js?v=upload-resilience-20260529"></script>
   <script src="scripts/09-subagents-core.js?v=refine-quiet-20260529"></script>
   <script src="scripts/10-scheduler-proactive.js?v=reboot-truth-20260528"></script>
-  <script src="scripts/11-subagents-runner.js?v=subagent-31lite-20260529"></script>
+  <script src="scripts/11-subagents-runner.js?v=ollama-local-20260530"></script>
   <script src="scripts/12-subagents-notifications.js?v=cred-prompt-20260529"></script>
   <script src="scripts/13-google-workspace.js?v=upload-resilience-20260529"></script>
 </body>
