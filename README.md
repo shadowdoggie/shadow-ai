@@ -13,6 +13,10 @@ multi-step work in the background, and (optionally) working with your Google acc
 > *Shadow AI is an independent project, not affiliated with or endorsed by OpenClaw.
 > "OpenClaw" is the trademark of its respective owner.*
 
+## See it in action
+
+▶️ **[Watch the demo](https://youtu.be/oXpQaCJPUO4)**
+
 ## What it does
 
 - 🎙️ **Real-time voice conversation** — natural, low-latency back-and-forth, not push-to-talk.
@@ -27,11 +31,13 @@ multi-step work in the background, and (optionally) working with your Google acc
 
 ## Getting started
 
-Shadow AI ships as a per-user Windows installer (`ShadowAI-Setup.exe`) that bundles
-everything it needs — Python, Node, and the SearXNG search engine — so there's **nothing
-else to install** (no Docker). Run it, launch Shadow, and paste a free
+**[⬇️ Download the latest installer](https://github.com/shadowdoggie/shadow-ai/releases/latest)** (`ShadowAI-Setup.exe`).
+
+Shadow AI ships as a per-user Windows installer that bundles everything it needs — Python,
+Node, and the SearXNG search engine — so there's **nothing else to install** (no Docker).
+Run it, launch Shadow, and paste a free
 [Gemini API key](https://aistudio.google.com/apikey) on first run — your key stays **local
-on your machine**. Gmail/Calendar/Contacts are optional via an in-app setup wizard.
+on your machine**. Gmail/Calendar/Drive/Contacts are optional via an in-app setup wizard.
 
 See **[SETUP.md](SETUP.md)** for full install, developer, and build-from-source steps.
 
