@@ -39,6 +39,23 @@ Run it, launch Shadow, and paste a free
 [Gemini API key](https://aistudio.google.com/apikey) on first run — your key stays **local
 on your machine**. Gmail/Calendar/Drive/Contacts are optional via an in-app setup wizard.
 
+> [!NOTE]
+> **Windows SmartScreen warning is expected.** The installer isn't code-signed yet (signing
+> certificates are costly for a free, solo open-source project), so Windows may show a blue
+> *"Windows protected your PC"* screen. This does **not** mean the file is unsafe — it just
+> means it's new and unsigned. To proceed: click **More info → Run anyway**.
+>
+> Shadow AI is fully open source, so you can read exactly what it does. If you'd like to
+> verify your download is the genuine, untampered file, check its SHA-256 hash against the
+> value published on the [release page](https://github.com/shadowdoggie/shadow-ai/releases/latest):
+>
+> ```powershell
+> Get-FileHash .\ShadowAI-Setup.exe -Algorithm SHA256
+> ```
+>
+> v1.0.0 `ShadowAI-Setup.exe`:
+> `b7fc4266c8c266379e186ea94f90ae784c4087d8771bb816da7389d6b046a681`
+
 See **[SETUP.md](SETUP.md)** for full install, developer, and build-from-source steps.
 
 ## Contributing
