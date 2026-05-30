@@ -58,6 +58,16 @@ on your machine**. Gmail/Calendar/Drive/Contacts are optional via an in-app setu
 
 See **[SETUP.md](SETUP.md)** for full install, developer, and build-from-source steps.
 
+## Roadmap
+
+No promises or timelines, but here's where my head's at right now:
+
+- **Local LLM support — current priority.** Running the assistant against models you host
+  yourself, via both a **local Ollama** backend and a **custom (OpenAI-compatible) endpoint**
+  provider, so you can point Shadow at your own machine or your own inference server.
+- **Local TTS — eventually.** Looking at **Qwen3-TTS** as a possible fully-local
+  text-to-speech option down the line.
+
 ## Contributing
 
 Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) first. In short:
