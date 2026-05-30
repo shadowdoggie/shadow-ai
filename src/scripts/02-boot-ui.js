@@ -1066,6 +1066,270 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (btnLlamacppDeleteModel) btnLlamacppDeleteModel.addEventListener('click', llamacppDeleteModel);
   if (btnLlamacppStart) btnLlamacppStart.addEventListener('click', llamacppStartServer);
   if (btnLlamacppStop) btnLlamacppStop.addEventListener('click', llamacppStopServer);
+  // Local Voice STT (experimental) wiring
+  if (btnVoiceSttInstall) btnVoiceSttInstall.addEventListener('click', voiceSttInstall);
+  if (btnVoiceSttDownload) btnVoiceSttDownload.addEventListener('click', voiceSttDownload);
+  if (btnVoiceSttTest) btnVoiceSttTest.addEventListener('click', voiceSttTest);
+  refreshVoiceSttStatus();
+  // Local Voice TTS (Qwen3-TTS) wiring
+  if (btnVoiceTtsInstall) btnVoiceTtsInstall.addEventListener('click', voiceTtsInstall);
+  if (btnVoiceTtsDownload) btnVoiceTtsDownload.addEventListener('click', voiceTtsDownload);
+  if (btnVoiceTtsTest) btnVoiceTtsTest.addEventListener('click', voiceTtsTest);
+  if (selectVoiceTtsVoiceMode) selectVoiceTtsVoiceMode.addEventListener('change', updateVoiceTtsModeUI);
+  if (btnVoiceTtsDesignDownload) btnVoiceTtsDesignDownload.addEventListener('click', voiceTtsDesignDownload);
+  if (btnVoiceTtsTranscribe) btnVoiceTtsTranscribe.addEventListener('click', voiceTtsTranscribe);
+  updateVoiceTtsModeUI();
+  refreshVoiceTtsStatus();
+
+  async function voiceTtsTranscribe() {
+    if (!btnVoiceTtsTranscribe) return;
+    const wav = (inputVoiceTtsRefWav && inputVoiceTtsRefWav.value || '').trim();
+    if (!wav) { if (voiceTtsTranscribeStatus) voiceTtsTranscribeStatus.textContent = 'Enter the .wav path first.'; return; }
+    btnVoiceTtsTranscribe.disabled = true;
+    if (voiceTtsTranscribeStatus) voiceTtsTranscribeStatus.textContent = 'Transcribing the sample with local STT...';
+    try {
+      const res = await fetchLocalApiWithTimeout('/api/voice/stt/transcribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wav, model: (selectVoiceSttModel && selectVoiceSttModel.value) || 'parakeet' }) }, LOCAL_API_TIMEOUT_MS);
+      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
+      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Transcribe failed to start.');
+      let polls = 0;
+      const t = setInterval(async () => {
+        polls++;
+        try {
+          const r = await fetchLocalApiWithTimeout('/api/voice/stt/transcribe-result', {}, LOCAL_API_TIMEOUT_MS);
+          const s = await readBootResponseJsonWithTimeout(r, LOCAL_API_TIMEOUT_MS);
+          if (s && s.done) {
+            clearInterval(t); btnVoiceTtsTranscribe.disabled = false;
+            if (inputVoiceTtsRefText) inputVoiceTtsRefText.value = s.transcript || '';
+            if (voiceTtsTranscribeStatus) voiceTtsTranscribeStatus.textContent = s.transcript ? 'Transcript filled in - tweak it if needed.' : 'No speech detected in the sample.';
+          } else if (s && s.error) {
+            clearInterval(t); btnVoiceTtsTranscribe.disabled = false; if (voiceTtsTranscribeStatus) voiceTtsTranscribeStatus.textContent = `Transcribe failed: ${s.error}`;
+          }
+        } catch (e) {}
+        if (polls > 40) { clearInterval(t); btnVoiceTtsTranscribe.disabled = false; if (voiceTtsTranscribeStatus && voiceTtsTranscribeStatus.textContent.indexOf('filled') < 0) voiceTtsTranscribeStatus.textContent = 'Timed out - check the wav path / that STT is installed.'; }
+      }, 1000);
+    } catch (err) { btnVoiceTtsTranscribe.disabled = false; if (voiceTtsTranscribeStatus) voiceTtsTranscribeStatus.textContent = `Transcribe failed: ${err.message}`; }
+  }
+
+  function updateVoiceTtsModeUI() {
+    const mode = (selectVoiceTtsVoiceMode && selectVoiceTtsVoiceMode.value) || 'default';
+    if (voiceTtsCloneRow) voiceTtsCloneRow.style.display = (mode === 'clone') ? 'flex' : 'none';
+    if (voiceTtsDesignRow) voiceTtsDesignRow.style.display = (mode === 'design') ? 'flex' : 'none';
+  }
+
+  async function voiceTtsDesignDownload() {
+    if (!btnVoiceTtsDesignDownload) return;
+    btnVoiceTtsDesignDownload.disabled = true;
+    const tier = (selectVoiceTtsModel && selectVoiceTtsModel.value) || '1.7b';
+    if (voiceTtsDesignStatus) voiceTtsDesignStatus.textContent = 'Checking...';
+    try {
+      // already present?
+      const sres = await fetchLocalApiWithTimeout('/api/voice/tts/status', {}, LOCAL_API_TIMEOUT_MS);
+      const sdata = await readBootResponseJsonWithTimeout(sres, LOCAL_API_TIMEOUT_MS);
+      if (sdata && sdata.designInstalled) { btnVoiceTtsDesignDownload.disabled = false; if (voiceTtsDesignStatus) voiceTtsDesignStatus.textContent = 'Voice-design model ready.'; return; }
+      const res = await fetchLocalApiWithTimeout('/api/voice/tts/model/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: tier, variant: 'voicedesign' }) }, LOCAL_API_TIMEOUT_MS);
+      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
+      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Download failed to start.');
+      if (voiceTtsDesignStatus) voiceTtsDesignStatus.textContent = `Downloading ${tier} voice-design (~2 GB)...`;
+      let polls = 0;
+      const t = setInterval(async () => {
+        polls++;
+        try {
+          const r = await fetchLocalApiWithTimeout('/api/voice/tts/model/download-status', {}, LOCAL_API_TIMEOUT_MS);
+          const s = await readBootResponseJsonWithTimeout(r, LOCAL_API_TIMEOUT_MS);
+          const d = s && s.download;
+          if (d && (d.state === 'downloading-voice' || d.state === 'downloading-codec' || d.state === 'starting')) { if (voiceTtsDesignStatus) voiceTtsDesignStatus.textContent = `${d.state.replace('-', ' ')}...`; }
+          else if (d && d.state === 'done') { clearInterval(t); btnVoiceTtsDesignDownload.disabled = false; if (voiceTtsDesignStatus) voiceTtsDesignStatus.textContent = 'Voice-design model ready.'; }
+          else if (d && d.state === 'error') { clearInterval(t); btnVoiceTtsDesignDownload.disabled = false; if (voiceTtsDesignStatus) voiceTtsDesignStatus.textContent = `Download failed: ${d.error || 'unknown error'}`; }
+        } catch (e) {}
+        if (polls > 6000) { clearInterval(t); btnVoiceTtsDesignDownload.disabled = false; }
+      }, 1500);
+    } catch (err) { btnVoiceTtsDesignDownload.disabled = false; if (voiceTtsDesignStatus) voiceTtsDesignStatus.textContent = `Download failed: ${err.message}`; }
+  }
+
+  async function refreshVoiceSttStatus() {
+    try {
+      const res = await fetchLocalApiWithTimeout('/api/voice/stt/status', {}, LOCAL_API_TIMEOUT_MS);
+      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
+      if (!data || data.status !== 'success') return;
+      if (voiceSttInstallStatus) voiceSttInstallStatus.textContent = data.cliInstalled ? 'Engine installed.' : 'Not installed yet.';
+      let models = data.models; if (!Array.isArray(models)) models = models ? [models] : [];
+      if (voiceSttModelStatus) voiceSttModelStatus.textContent = models.length ? `Model ready: ${models.join(', ')}` : 'No model downloaded yet.';
+    } catch (e) {}
+  }
+
+  async function voiceSttInstall() {
+    if (!btnVoiceSttInstall) return;
+    btnVoiceSttInstall.disabled = true;
+    if (voiceSttInstallStatus) voiceSttInstallStatus.textContent = 'Starting download (~300 MB)...';
+    try {
+      const res = await fetchLocalApiWithTimeout('/api/voice/stt/install', { method: 'POST' }, LOCAL_API_TIMEOUT_MS);
+      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
+      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Install failed to start.');
+      let polls = 0;
+      const t = setInterval(async () => {
+        polls++;
+        try {
+          const r = await fetchLocalApiWithTimeout('/api/voice/stt/install-status', {}, LOCAL_API_TIMEOUT_MS);
+          const s = await readBootResponseJsonWithTimeout(r, LOCAL_API_TIMEOUT_MS);
+          if (s && s.state === 'installing') { if (voiceSttInstallStatus) voiceSttInstallStatus.textContent = 'Downloading / extracting the speech engine...'; }
+          else if (s && s.state === 'installed') { clearInterval(t); btnVoiceSttInstall.disabled = false; if (voiceSttInstallStatus) voiceSttInstallStatus.textContent = 'Engine installed.'; }
+          else if (s && s.state === 'error') { clearInterval(t); btnVoiceSttInstall.disabled = false; if (voiceSttInstallStatus) voiceSttInstallStatus.textContent = `Install failed: ${s.error || 'unknown error'}`; }
+        } catch (e) {}
+        if (polls > 600) { clearInterval(t); btnVoiceSttInstall.disabled = false; }
+      }, 1500);
+    } catch (err) { btnVoiceSttInstall.disabled = false; if (voiceSttInstallStatus) voiceSttInstallStatus.textContent = `Install failed: ${err.message}`; }
+  }
+
+  async function voiceSttDownload() {
+    if (!btnVoiceSttDownload) return;
+    btnVoiceSttDownload.disabled = true;
+    const sttModel = (selectVoiceSttModel && selectVoiceSttModel.value) || 'parakeet';
+    if (voiceSttModelStatus) voiceSttModelStatus.textContent = 'Checking...';
+    // Idempotent per-model: skip if the SELECTED model is already on disk (re-extraction briefly
+    // leaves the folder incomplete and breaks a test clicked during that window).
+    try {
+      const sres = await fetchLocalApiWithTimeout('/api/voice/stt/status', {}, LOCAL_API_TIMEOUT_MS);
+      const sdata = await readBootResponseJsonWithTimeout(sres, LOCAL_API_TIMEOUT_MS);
+      let existing = sdata && sdata.models; if (!Array.isArray(existing)) existing = existing ? [existing] : [];
+      if (existing.some(m => String(m).toLowerCase().indexOf(sttModel) >= 0)) { btnVoiceSttDownload.disabled = false; if (voiceSttModelStatus) voiceSttModelStatus.textContent = `${sttModel} already downloaded.`; return; }
+    } catch (e) {}
+    if (voiceSttModelStatus) voiceSttModelStatus.textContent = `Starting ${sttModel} download (Whisper is ~1.5 GB)...`;
+    try {
+      const res = await fetchLocalApiWithTimeout('/api/voice/stt/model/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: sttModel }) }, LOCAL_API_TIMEOUT_MS);
+      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
+      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Download failed to start.');
+      let polls = 0;
+      const t = setInterval(async () => {
+        polls++;
+        try {
+          const r = await fetchLocalApiWithTimeout('/api/voice/stt/model/download-status', {}, LOCAL_API_TIMEOUT_MS);
+          const s = await readBootResponseJsonWithTimeout(r, LOCAL_API_TIMEOUT_MS);
+          const d = s && s.download;
+          if (d && (d.state === 'downloading' || d.state === 'starting' || d.state === 'extracting')) { if (voiceSttModelStatus) voiceSttModelStatus.textContent = `${d.state}...`; }
+          else if (d && d.state === 'done') { clearInterval(t); btnVoiceSttDownload.disabled = false; if (voiceSttModelStatus) voiceSttModelStatus.textContent = 'Model downloaded.'; refreshVoiceSttStatus(); }
+          else if (d && d.state === 'error') { clearInterval(t); btnVoiceSttDownload.disabled = false; if (voiceSttModelStatus) voiceSttModelStatus.textContent = `Download failed: ${d.error || 'unknown error'}`; }
+        } catch (e) {}
+        if (polls > 4000) { clearInterval(t); btnVoiceSttDownload.disabled = false; }
+      }, 1500);
+    } catch (err) { btnVoiceSttDownload.disabled = false; if (voiceSttModelStatus) voiceSttModelStatus.textContent = `Download failed: ${err.message}`; }
+  }
+
+  async function voiceSttTest() {
+    if (!btnVoiceSttTest) return;
+    btnVoiceSttTest.disabled = true;
+    if (voiceSttTestResult) voiceSttTestResult.textContent = 'Transcribing the sample clip...';
+    const sttModel = (selectVoiceSttModel && selectVoiceSttModel.value) || 'parakeet';
+    try {
+      const res = await fetchLocalApiWithTimeout('/api/voice/stt/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: sttModel }) }, LOCAL_API_TIMEOUT_MS);
+      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
+      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Test failed to start.');
+      let polls = 0;
+      const t = setInterval(async () => {
+        polls++;
+        try {
+          const r = await fetchLocalApiWithTimeout('/api/voice/stt/test-result', {}, LOCAL_API_TIMEOUT_MS);
+          const s = await readBootResponseJsonWithTimeout(r, LOCAL_API_TIMEOUT_MS);
+          if (s && s.done) { clearInterval(t); btnVoiceSttTest.disabled = false; if (voiceSttTestResult) voiceSttTestResult.textContent = `Transcribed: "${s.transcript}"`; }
+        } catch (e) {}
+        if (polls > 40) { clearInterval(t); btnVoiceSttTest.disabled = false; if (voiceSttTestResult && voiceSttTestResult.textContent.indexOf('Transcribed') !== 0) voiceSttTestResult.textContent = 'No result yet — make sure the engine + model are installed (this also fails if the model is still loading).'; }
+      }, 1500);
+    } catch (err) { btnVoiceSttTest.disabled = false; if (voiceSttTestResult) voiceSttTestResult.textContent = `Test failed: ${err.message}`; }
+  }
+
+  async function refreshVoiceTtsStatus() {
+    try {
+      const res = await fetchLocalApiWithTimeout('/api/voice/tts/status', {}, LOCAL_API_TIMEOUT_MS);
+      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
+      if (!data || data.status !== 'success') return;
+      if (voiceTtsInstallStatus) voiceTtsInstallStatus.textContent = data.engineInstalled ? `Engine installed (${data.backend}).` : `Not installed (will use ${data.backend}).`;
+      let models = data.models; if (!Array.isArray(models)) models = models ? [models] : [];
+      if (voiceTtsModelStatus) voiceTtsModelStatus.textContent = (models.length && data.codecInstalled) ? `Voice ready: ${models.join(', ')}` : (models.length ? 'Voice present, codec missing.' : 'No voice model yet.');
+    } catch (e) {}
+  }
+
+  async function voiceTtsInstall() {
+    if (!btnVoiceTtsInstall) return;
+    btnVoiceTtsInstall.disabled = true;
+    if (voiceTtsInstallStatus) voiceTtsInstallStatus.textContent = 'Starting engine download...';
+    try {
+      const res = await fetchLocalApiWithTimeout('/api/voice/tts/install', { method: 'POST' }, LOCAL_API_TIMEOUT_MS);
+      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
+      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Install failed to start.');
+      let polls = 0;
+      const t = setInterval(async () => {
+        polls++;
+        try {
+          const r = await fetchLocalApiWithTimeout('/api/voice/tts/install-status', {}, LOCAL_API_TIMEOUT_MS);
+          const s = await readBootResponseJsonWithTimeout(r, LOCAL_API_TIMEOUT_MS);
+          const i = s && s.install;
+          if (i && (i.state === 'downloading' || i.state === 'extracting' || i.state === 'starting')) { if (voiceTtsInstallStatus) voiceTtsInstallStatus.textContent = `${i.state}...`; }
+          else if (i && i.state === 'installed') { clearInterval(t); btnVoiceTtsInstall.disabled = false; if (voiceTtsInstallStatus) voiceTtsInstallStatus.textContent = 'Engine installed.'; refreshVoiceTtsStatus(); }
+          else if (i && i.state === 'error') { clearInterval(t); btnVoiceTtsInstall.disabled = false; if (voiceTtsInstallStatus) voiceTtsInstallStatus.textContent = `Install failed: ${i.error || 'unknown error'}`; }
+        } catch (e) {}
+        if (polls > 600) { clearInterval(t); btnVoiceTtsInstall.disabled = false; }
+      }, 1500);
+    } catch (err) { btnVoiceTtsInstall.disabled = false; if (voiceTtsInstallStatus) voiceTtsInstallStatus.textContent = `Install failed: ${err.message}`; }
+  }
+
+  async function voiceTtsDownload() {
+    if (!btnVoiceTtsDownload) return;
+    btnVoiceTtsDownload.disabled = true;
+    if (voiceTtsModelStatus) voiceTtsModelStatus.textContent = 'Checking...';
+    const tier = (selectVoiceTtsModel && selectVoiceTtsModel.value) || '1.7b';
+    try {
+      const res = await fetchLocalApiWithTimeout('/api/voice/tts/model/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: tier }) }, LOCAL_API_TIMEOUT_MS);
+      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
+      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Download failed to start.');
+      if (voiceTtsModelStatus) voiceTtsModelStatus.textContent = `Downloading ${tier} voice (~1-2.5 GB)...`;
+      let polls = 0;
+      const t = setInterval(async () => {
+        polls++;
+        try {
+          const r = await fetchLocalApiWithTimeout('/api/voice/tts/model/download-status', {}, LOCAL_API_TIMEOUT_MS);
+          const s = await readBootResponseJsonWithTimeout(r, LOCAL_API_TIMEOUT_MS);
+          const d = s && s.download;
+          if (d && (d.state === 'downloading-voice' || d.state === 'downloading-codec' || d.state === 'starting')) { if (voiceTtsModelStatus) voiceTtsModelStatus.textContent = `${d.state.replace('-', ' ')}...`; }
+          else if (d && d.state === 'done') { clearInterval(t); btnVoiceTtsDownload.disabled = false; if (voiceTtsModelStatus) voiceTtsModelStatus.textContent = 'Voice model downloaded.'; refreshVoiceTtsStatus(); }
+          else if (d && d.state === 'error') { clearInterval(t); btnVoiceTtsDownload.disabled = false; if (voiceTtsModelStatus) voiceTtsModelStatus.textContent = `Download failed: ${d.error || 'unknown error'}`; }
+        } catch (e) {}
+        if (polls > 6000) { clearInterval(t); btnVoiceTtsDownload.disabled = false; }
+      }, 1500);
+    } catch (err) { btnVoiceTtsDownload.disabled = false; if (voiceTtsModelStatus) voiceTtsModelStatus.textContent = `Download failed: ${err.message}`; }
+  }
+
+  async function voiceTtsTest() {
+    if (!btnVoiceTtsTest) return;
+    btnVoiceTtsTest.disabled = true;
+    if (voiceTtsTestResult) voiceTtsTestResult.textContent = 'Synthesizing (first run loads the model, ~10-20s)...';
+    const text = (inputVoiceTtsText && inputVoiceTtsText.value) || 'Hello! This is a local Qwen 3 text to speech voice.';
+    const lang = (selectVoiceTtsLang && selectVoiceTtsLang.value) || 'auto';
+    const voiceMode = (selectVoiceTtsVoiceMode && selectVoiceTtsVoiceMode.value) || 'default';
+    const refWav = (inputVoiceTtsRefWav && inputVoiceTtsRefWav.value) || '';
+    const refText = (inputVoiceTtsRefText && inputVoiceTtsRefText.value) || '';
+    const instruct = (inputVoiceTtsInstruct && inputVoiceTtsInstruct.value) || '';
+    try {
+      const res = await fetchLocalApiWithTimeout('/api/voice/tts/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, lang, voiceMode, refWav, refText, instruct }) }, LOCAL_API_TIMEOUT_MS);
+      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
+      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Test failed to start.');
+      let polls = 0;
+      const t = setInterval(async () => {
+        polls++;
+        try {
+          const r = await fetchLocalApiWithTimeout('/api/voice/tts/test-result', {}, LOCAL_API_TIMEOUT_MS);
+          const s = await readBootResponseJsonWithTimeout(r, LOCAL_API_TIMEOUT_MS);
+          if (s && s.done) {
+            clearInterval(t); btnVoiceTtsTest.disabled = false;
+            if (voiceTtsTestResult) voiceTtsTestResult.textContent = 'Playing...';
+            if (voiceTtsAudio) { voiceTtsAudio.src = '/api/voice/tts/test-audio?t=' + Date.now(); voiceTtsAudio.play().catch(() => {}); }
+          } else if (s && s.state === 'error') {
+            clearInterval(t); btnVoiceTtsTest.disabled = false; if (voiceTtsTestResult) voiceTtsTestResult.textContent = `Failed: ${s.error || 'unknown error'}`;
+          }
+        } catch (e) {}
+        if (polls > 80) { clearInterval(t); btnVoiceTtsTest.disabled = false; if (voiceTtsTestResult && voiceTtsTestResult.textContent.indexOf('Playing') !== 0) voiceTtsTestResult.textContent = 'Timed out — make sure the engine + voice model are installed.'; }
+      }, 1500);
+    } catch (err) { btnVoiceTtsTest.disabled = false; if (voiceTtsTestResult) voiceTtsTestResult.textContent = `Test failed: ${err.message}`; }
+  }
+
   if (inputLlamacppCtx) {
     inputLlamacppCtx.addEventListener('change', () => {
       const v = parseInt(inputLlamacppCtx.value, 10);

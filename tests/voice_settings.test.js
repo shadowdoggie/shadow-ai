@@ -407,7 +407,7 @@ describe('voice setting session behavior', () => {
     expect(indexHtml).toContain('input-assistant-name');
     expect(indexHtml).toContain('Subagent Prompt Brain');
     expect(indexHtml).toContain('Refine subagent prompts and steering with the selected subagent model');
-    expect(indexHtml).toContain('01-state-dom.js?v=llamacpp-e-20260530');
+    expect(indexHtml).toContain('01-state-dom.js?v=voice-whisper-20260530');
     expect(indexHtml).toContain('11-subagents-runner.js?v=llamacpp-i-20260530');
   });
 
@@ -949,7 +949,7 @@ describe('voice setting session behavior', () => {
     expect(screenConfig).not.toContain('hey shadow');
     expect(bootUi).not.toContain('startWakeWordListener();');
     expect(liveConnection).not.toContain('startWakeWordListener();');
-    expect(indexHtml).toContain('02-boot-ui.js?v=llamacpp-i-20260530');
+    expect(indexHtml).toContain('02-boot-ui.js?v=voice-whisper-20260530');
     expect(indexHtml).toContain('03-screen-config.js?v=llamacpp-20260530');
     expect(indexHtml).toContain('05-live-connection.js?v=llamacpp-h-20260530');
     expect(indexHtml).toContain('08-memory.js?v=llamacpp-f-20260530');

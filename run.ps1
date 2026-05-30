@@ -822,6 +822,326 @@ $serverScript = {
     # persist across app upgrades). The running server is tracked via a status
     # file (PID/port/model) so state survives across listener-loop iterations.
     # ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # Local voice STT manager (sherpa-onnx). Mirrors the llama.cpp manager: the
+    # sherpa-onnx CLI + model packs download into voice/ and persist across upgrades.
+    # ---------------------------------------------------------------------------
+    function Get-ShadowVoiceDir {
+        $dir = Join-Path $scriptDir "voice"
+        foreach ($sub in @($dir, (Join-Path $dir "bin"), (Join-Path $dir "stt-models"))) {
+            if (-not (Test-Path $sub -PathType Container)) { New-Item -ItemType Directory -Path $sub -Force | Out-Null }
+        }
+        return $dir
+    }
+    function Get-ShadowVoiceSttModelsDir { return (Join-Path (Get-ShadowVoiceDir) "stt-models") }
+
+    # Headless sherpa-onnx offline ASR binary (extracted from the platform tarball).
+    function Get-ShadowVoiceSttExe {
+        $bin = Join-Path (Get-ShadowVoiceDir) "bin"
+        $f = Get-ChildItem -Path $bin -Filter "sherpa-onnx-offline.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($f) { return $f.FullName }
+        return $null
+    }
+
+    # STT model = a subfolder of stt-models containing the .onnx files + tokens.txt.
+    function Get-ShadowVoiceSttModels {
+        $dir = Get-ShadowVoiceSttModelsDir
+        return @(Get-ChildItem -Path $dir -Directory -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { $_.Name })
+    }
+    # Resolve a model key (parakeet|whisper) to its installed model directory; falls back to the first.
+    function Get-ShadowSttModelDir {
+        param([string]$Key)
+        $dirs = @(Get-ChildItem -Path (Get-ShadowVoiceSttModelsDir) -Directory -ErrorAction SilentlyContinue)
+        if ($dirs.Count -eq 0) { return $null }
+        if ($Key -eq 'whisper') { $d = $dirs | Where-Object { $_.Name -match 'whisper' } | Select-Object -First 1; if ($d) { return $d.FullName } }
+        if ($Key -eq 'parakeet') { $d = $dirs | Where-Object { $_.Name -match 'parakeet' } | Select-Object -First 1; if ($d) { return $d.FullName } }
+        return ($dirs | Sort-Object Name | Select-Object -First 1).FullName
+    }
+    # Build the sherpa-onnx model flags for a model dir: transducer (Parakeet, has a joiner) vs Whisper.
+    function Get-ShadowSttRecognizerArgs {
+        param([string]$ModelDir)
+        if (-not ($ModelDir -and (Test-Path $ModelDir))) { return $null }
+        $tok = (Get-ChildItem $ModelDir -Filter "*tokens*.txt" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+        $joiner = (Get-ChildItem $ModelDir -Filter "joiner*.onnx" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+        if ($joiner) {
+            $enc = (Get-ChildItem $ModelDir -Filter "encoder*.onnx" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+            $dec = (Get-ChildItem $ModelDir -Filter "decoder*.onnx" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+            if (-not ($enc -and $dec -and $tok)) { return $null }
+            return @("--encoder=$enc", "--decoder=$dec", "--joiner=$joiner", "--tokens=$tok", "--model-type=nemo_transducer")
+        }
+        # Whisper: prefer the int8 encoder/decoder (sorts before the fp32 name).
+        $wenc = (Get-ChildItem $ModelDir -Filter "*encoder*.onnx" -Recurse -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -First 1).FullName
+        $wdec = (Get-ChildItem $ModelDir -Filter "*decoder*.onnx" -Recurse -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -First 1).FullName
+        if ($wenc -and $wdec -and $tok) { return @("--whisper-encoder=$wenc", "--whisper-decoder=$wdec", "--tokens=$tok") }
+        return $null
+    }
+
+    # Background downloader for sherpa-onnx .tar.bz2 assets (CLI tarball + model packs):
+    # curl (its UA isn't CDN-throttled) -> tar -xf -> status JSON the UI polls.
+    function Ensure-ShadowVoiceTarDownloadScript {
+        $scriptPath = Join-Path (Get-ShadowVoiceDir) "tar-download.ps1"
+        $body = @'
+param(
+    [Parameter(Mandatory=$true)][string]$Url,
+    [Parameter(Mandatory=$true)][string]$TarPath,
+    [Parameter(Mandatory=$true)][string]$DestDir,
+    [Parameter(Mandatory=$true)][string]$StatusPath
+)
+$ErrorActionPreference = "Stop"
+function Write-Status($o) { $o | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath $StatusPath }
+try {
+    Write-Status @{ state = "downloading" }
+    & curl.exe -L --fail -s -o $TarPath $Url
+    if ($LASTEXITCODE -ne 0) { throw "download failed (curl exit $LASTEXITCODE)" }
+    if (-not (Test-Path $DestDir)) { New-Item -ItemType Directory -Path $DestDir -Force | Out-Null }
+    Write-Status @{ state = "extracting" }
+    & tar -xf $TarPath -C $DestDir
+    if ($LASTEXITCODE -ne 0) { throw "extract failed (tar exit $LASTEXITCODE)" }
+    Remove-Item -LiteralPath $TarPath -Force -ErrorAction SilentlyContinue
+    Write-Status @{ state = "done" }
+} catch {
+    Write-Status @{ state = "error"; error = $_.Exception.Message }
+}
+'@
+        Set-Content -Encoding utf8 -LiteralPath $scriptPath -Value $body
+        return $scriptPath
+    }
+
+    function Start-ShadowVoiceTarDownload {
+        param([string]$Url, [string]$DestDir, [string]$StatusPath, [string]$TarName)
+        $script = Ensure-ShadowVoiceTarDownloadScript
+        $tar = Join-Path (Get-ShadowVoiceDir) $TarName
+        @{ state = "starting" } | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath $StatusPath
+        $psArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script, "-Url", $Url, "-TarPath", $tar, "-DestDir", $DestDir, "-StatusPath", $StatusPath)
+        Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WindowStyle Hidden | Out-Null
+    }
+
+    # Latest sherpa-onnx platform tarball (carries the headless CLI: sherpa-onnx-offline.exe etc).
+    # In recent releases only the CUDA tarball ships the CLI, but it runs fine with --provider=cpu.
+    function Get-ShadowVoiceSherpaCliUrl {
+        $headers = @{ "User-Agent" = "ShadowAI-voice"; "Accept" = "application/vnd.github+json" }
+        $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/k2-fsa/sherpa-onnx/releases/latest" -Headers $headers -TimeoutSec 15
+        $asset = $rel.assets | Where-Object { $_.name -match 'win-x64.*\.tar\.bz2$' -and $_.name -match 'cuda' } | Select-Object -First 1
+        if (-not $asset) { $asset = $rel.assets | Where-Object { $_.name -match 'win-x64.*\.tar\.bz2$' } | Select-Object -First 1 }
+        return [PSCustomObject]@{ tag = [string]$rel.tag_name; url = if ($asset) { [string]$asset.browser_download_url } else { "" }; name = if ($asset) { [string]$asset.name } else { "" } }
+    }
+
+    # ---- Qwen3-TTS (qwentts.cpp) helpers ----
+    # Prebuilt binaries we publish at github.com/shadowdoggie/shadow-ai (qwen3-tts-bin-v1).
+    function Get-ShadowVoiceTtsDir {
+        $dir = Join-Path (Get-ShadowVoiceDir) "tts"
+        foreach ($sub in @($dir, (Join-Path $dir "bin"), (Join-Path $dir "models"))) {
+            if (-not (Test-Path $sub -PathType Container)) { New-Item -ItemType Directory -Path $sub -Force | Out-Null }
+        }
+        return $dir
+    }
+    function Get-ShadowVoiceTtsBinDir { return (Join-Path (Get-ShadowVoiceTtsDir) "bin") }
+    function Get-ShadowVoiceTtsModelsDir { return (Join-Path (Get-ShadowVoiceTtsDir) "models") }
+    function Get-ShadowVoiceTtsExe {
+        $f = Get-ChildItem -Path (Get-ShadowVoiceTtsBinDir) -Filter "qwen-tts.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($f) { return $f.FullName }
+        return $null
+    }
+    # Only vulkan (NVIDIA/AMD/Intel) and cpu builds are published; map cuda -> vulkan.
+    function Get-ShadowVoiceTtsBackend {
+        $b = Get-ShadowLlamacppBackend
+        if ($b -eq 'cuda' -or $b -eq 'vulkan') { return 'vulkan' }
+        return 'cpu'
+    }
+    function Get-ShadowVoiceTtsEngineUrl {
+        $b = Get-ShadowVoiceTtsBackend
+        return "https://github.com/shadowdoggie/shadow-ai/releases/download/qwen3-tts-bin-v1/qwen3-tts-win-x64-$b.zip"
+    }
+    function Get-ShadowVoiceTtsModels {
+        $dir = Get-ShadowVoiceTtsModelsDir
+        $out = @()
+        foreach ($f in (Get-ChildItem -Path $dir -Filter "qwen-talker-*.gguf" -ErrorAction SilentlyContinue | Sort-Object Name)) { $out += $f.Name }
+        return @($out)
+    }
+    function Get-ShadowVoiceTtsCodec {
+        $f = Get-ChildItem -Path (Get-ShadowVoiceTtsModelsDir) -Filter "qwen-tokenizer-12hz-*.gguf" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($f) { return $f.FullName }
+        return $null
+    }
+    function Ensure-ShadowVoiceTtsEngineScript {
+        $scriptPath = Join-Path (Get-ShadowVoiceTtsDir) "engine-download.ps1"
+        $body = @'
+param([string]$Url,[string]$ZipPath,[string]$DestDir,[string]$StatusPath)
+$ErrorActionPreference = "Stop"
+function W($o){ $o | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath $StatusPath }
+try {
+    W @{ state = "downloading" }
+    & curl.exe -L --fail -s -o $ZipPath $Url
+    if ($LASTEXITCODE -ne 0) { throw "download failed (curl exit $LASTEXITCODE)" }
+    W @{ state = "extracting" }
+    Expand-Archive -LiteralPath $ZipPath -DestinationPath $DestDir -Force
+    Remove-Item -LiteralPath $ZipPath -Force -ErrorAction SilentlyContinue
+    W @{ state = "installed" }
+} catch { W @{ state = "error"; error = $_.Exception.Message } }
+'@
+        Set-Content -Encoding utf8 -LiteralPath $scriptPath -Value $body
+        return $scriptPath
+    }
+    function Start-ShadowVoiceTtsEngineDownload {
+        param([string]$Url, [string]$StatusPath)
+        $script = Ensure-ShadowVoiceTtsEngineScript
+        $zip = Join-Path (Get-ShadowVoiceTtsDir) "engine.zip"
+        @{ state = "starting" } | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath $StatusPath
+        $psArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script, "-Url", $Url, "-ZipPath", $zip, "-DestDir", (Get-ShadowVoiceTtsBinDir), "-StatusPath", $StatusPath)
+        Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WindowStyle Hidden | Out-Null
+    }
+    function Ensure-ShadowVoiceTtsModelScript {
+        $scriptPath = Join-Path (Get-ShadowVoiceTtsDir) "model-download.ps1"
+        $body = @'
+param([string]$TalkerUrl,[string]$CodecUrl,[string]$DestDir,[string]$StatusPath)
+$ErrorActionPreference = "Stop"
+function W($o){ $o | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath $StatusPath }
+try {
+    $talkerPath = Join-Path $DestDir (Split-Path $TalkerUrl -Leaf)
+    W @{ state = "downloading-voice" }
+    & curl.exe -L --fail -s -o $talkerPath $TalkerUrl
+    if ($LASTEXITCODE -ne 0) { throw "voice download failed (curl exit $LASTEXITCODE)" }
+    $codecPath = Join-Path $DestDir (Split-Path $CodecUrl -Leaf)
+    if (-not (Test-Path $codecPath)) {
+        W @{ state = "downloading-codec" }
+        & curl.exe -L --fail -s -o $codecPath $CodecUrl
+        if ($LASTEXITCODE -ne 0) { throw "codec download failed (curl exit $LASTEXITCODE)" }
+    }
+    W @{ state = "done" }
+} catch { W @{ state = "error"; error = $_.Exception.Message } }
+'@
+        Set-Content -Encoding utf8 -LiteralPath $scriptPath -Value $body
+        return $scriptPath
+    }
+    function Start-ShadowVoiceTtsModelDownload {
+        param([string]$TalkerUrl, [string]$CodecUrl, [string]$StatusPath)
+        $script = Ensure-ShadowVoiceTtsModelScript
+        @{ state = "starting" } | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath $StatusPath
+        $psArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script, "-TalkerUrl", $TalkerUrl, "-CodecUrl", $CodecUrl, "-DestDir", (Get-ShadowVoiceTtsModelsDir), "-StatusPath", $StatusPath)
+        Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WindowStyle Hidden | Out-Null
+    }
+    # Synthesize + peak-normalize in a background process (synthesis blocks ~seconds).
+    # Find the talker GGUF for a given variant (base = default + cloning, voicedesign = describe-a-voice).
+    function Get-ShadowVoiceTtsTalker {
+        param([string]$Variant = "base")
+        # Descending so 1.7b is preferred over 0.6b when both are present.
+        $f = Get-ChildItem -Path (Get-ShadowVoiceTtsModelsDir) -Filter "qwen-talker-*-$Variant-*.gguf" -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+        if ($f) { return $f.FullName }
+        return $null
+    }
+    # Trim a reference wav to the first N seconds for voice cloning. Qwen3-TTS ICL collapses on
+    # overlong references (and the ref-text must match), so both the transcribe and clone paths
+    # trim the SAME way -> identical clip -> transcript stays in sync. PCM16 only; others pass through.
+    function Get-ShadowTrimmedWav {
+        param([string]$WavPath, [int]$MaxSeconds = 10)
+        try {
+            $b = [System.IO.File]::ReadAllBytes($WavPath)
+            if ($b.Length -lt 44) { return $WavPath }
+            if ([System.Text.Encoding]::ASCII.GetString($b, 0, 4) -ne "RIFF" -or [System.Text.Encoding]::ASCII.GetString($b, 8, 4) -ne "WAVE") { return $WavPath }
+            $channels = 0; $sr = 0; $bits = 0; $dataOff = 0; $dataSize = 0; $off = 12
+            while ($off -le $b.Length - 8) {
+                $cid = [System.Text.Encoding]::ASCII.GetString($b, $off, 4); $csz = [BitConverter]::ToUInt32($b, $off + 4)
+                if ($cid -eq 'fmt ') { $channels = [BitConverter]::ToUInt16($b, $off + 10); $sr = [BitConverter]::ToUInt32($b, $off + 12); $bits = [BitConverter]::ToUInt16($b, $off + 22) }
+                elseif ($cid -eq 'data') { $dataOff = $off + 8; $dataSize = $csz; break }
+                $off += 8 + $csz + ($csz % 2)
+            }
+            if (-not ($channels -and $sr -and $bits -and $dataOff)) { return $WavPath }
+            if ($bits -ne 16) { return $WavPath }
+            $bps = $sr * $channels * 2; $blk = $channels * 2
+            $maxBytes = $MaxSeconds * $bps
+            if ($dataSize -le $maxBytes) { return $WavPath }
+            $take = $maxBytes - ($maxBytes % $blk)
+            if ($dataOff + $take -gt $b.Length) { $take = $b.Length - $dataOff }
+            $outPath = Join-Path (Get-ShadowVoiceTtsDir) "clone-ref.wav"
+            $ms = New-Object System.IO.MemoryStream; $bw = New-Object System.IO.BinaryWriter($ms)
+            $bw.Write([System.Text.Encoding]::ASCII.GetBytes("RIFF")); $bw.Write([uint32](36 + $take)); $bw.Write([System.Text.Encoding]::ASCII.GetBytes("WAVE"))
+            $bw.Write([System.Text.Encoding]::ASCII.GetBytes("fmt ")); $bw.Write([uint32]16); $bw.Write([uint16]1); $bw.Write([uint16]$channels); $bw.Write([uint32]$sr); $bw.Write([uint32]$bps); $bw.Write([uint16]$blk); $bw.Write([uint16]$bits)
+            $bw.Write([System.Text.Encoding]::ASCII.GetBytes("data")); $bw.Write([uint32]$take); $bw.Write($b, $dataOff, $take); $bw.Flush()
+            [System.IO.File]::WriteAllBytes($outPath, $ms.ToArray()); $bw.Close(); $ms.Close()
+            return $outPath
+        } catch { return $WavPath }
+    }
+    function Ensure-ShadowVoiceTtsTestScript {
+        $scriptPath = Join-Path (Get-ShadowVoiceTtsDir) "tts-run.ps1"
+        $body = @'
+param([string]$Exe,[string]$Model,[string]$Codec,[string]$Lang,[string]$PromptPath,[string]$OutWav,[string]$StatusPath,[string]$OutLog,[string]$ErrLog,[string]$Mode,[string]$RefWavPath,[string]$RefTextPath,[string]$InstructPath)
+$ErrorActionPreference = "Stop"
+function W($o){ $o | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath $StatusPath }
+function Q($s){ return ('"' + $s + '"') }
+try {
+    W @{ state = "synthesizing" }
+    $a = @("--model", (Q $Model), "--codec", (Q $Codec), "--lang", $Lang)
+    if ($Mode -eq "clone" -and (Test-Path $RefWavPath) -and (Test-Path $RefTextPath)) {
+        $refwav = ([string](Get-Content -LiteralPath $RefWavPath -Raw)).Trim().Trim([char]0xFEFF).Trim()
+        $a += @("--ref-wav", (Q $refwav), "--ref-text", (Q $RefTextPath))
+    } elseif ($Mode -eq "design" -and (Test-Path $InstructPath)) {
+        $ins = ([string](Get-Content -LiteralPath $InstructPath -Raw)).Trim()
+        if ($ins) { $a += @("--instruct", (Q $ins)) }
+    }
+    $a += @("-o", (Q $OutWav))
+    $p = Start-Process -FilePath $Exe -ArgumentList $a -WorkingDirectory (Split-Path $Exe) -RedirectStandardInput $PromptPath -RedirectStandardOutput $OutLog -RedirectStandardError $ErrLog -NoNewWindow -Wait -PassThru
+    if (-not (Test-Path $OutWav)) { throw "synthesis produced no audio (see log)" }
+    $b = [System.IO.File]::ReadAllBytes($OutWav); $n = [int](($b.Length - 44) / 2); $peak = 0
+    for ($i = 0; $i -lt $n; $i++) { $s = [BitConverter]::ToInt16($b, 44 + $i*2); $av = [math]::Abs($s); if ($av -gt $peak) { $peak = $av } }
+    if ($peak -gt 0) {
+        $g = [double][int](0.95*32767) / $peak
+        for ($i = 0; $i -lt $n; $i++) { $s = [BitConverter]::ToInt16($b, 44 + $i*2); $v = [int][math]::Round($s * $g); if ($v -gt 32767) { $v = 32767 }; if ($v -lt -32768) { $v = -32768 }; $by = [BitConverter]::GetBytes([int16]$v); $b[44 + $i*2] = $by[0]; $b[45 + $i*2] = $by[1] }
+        [System.IO.File]::WriteAllBytes($OutWav, $b)
+    }
+    W @{ state = "done" }
+} catch { W @{ state = "error"; error = $_.Exception.Message } }
+'@
+        Set-Content -Encoding utf8 -LiteralPath $scriptPath -Value $body
+        return $scriptPath
+    }
+    function Start-ShadowVoiceTtsTest {
+        param([string]$Text, [string]$Lang, [string]$Mode = "default", [string]$RefWav, [string]$RefText, [string]$Instruct)
+        # Users often paste a path via "Copy as path" which wraps it in double quotes; strip them.
+        $RefWav = ([string]$RefWav).Trim().Trim('"').Trim()
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        $exe = Get-ShadowVoiceTtsExe
+        if (-not $exe) { throw "Install the TTS engine first." }
+        $codec = Get-ShadowVoiceTtsCodec
+        if (-not $codec) { throw "Codec model missing - re-download a voice model." }
+        if ($Mode -eq "design") {
+            $model = Get-ShadowVoiceTtsTalker -Variant "voicedesign"
+            if (-not $model) { throw "Download the voice-design model first (use the Voice = Describe option)." }
+        } else {
+            $model = Get-ShadowVoiceTtsTalker -Variant "base"
+            if (-not $model) { throw "Download a voice model first." }
+        }
+        $ttsDir = Get-ShadowVoiceTtsDir
+        $prompt = Join-Path $ttsDir "tts-prompt.txt"
+        if (-not $Text) { $Text = "Hello, this is a local Qwen 3 text to speech voice." }
+        [System.IO.File]::WriteAllText($prompt, $Text, $utf8NoBom)
+        $reftextPath = Join-Path $ttsDir "tts-reftext.txt"
+        $instructPath = Join-Path $ttsDir "tts-instruct.txt"
+        $refwavPath = Join-Path $ttsDir "tts-refwav.txt"
+        if ($Mode -eq "clone") {
+            if (-not ($RefWav -and (Test-Path $RefWav))) { throw "Reference audio not found: $RefWav" }
+            if (-not $RefText) { throw "Provide the transcript of the reference audio." }
+            [System.IO.File]::WriteAllText($reftextPath, $RefText, $utf8NoBom)
+            # Trim overlong refs to the first 10s (cloning collapses or runs away otherwise).
+            $RefWav = Get-ShadowTrimmedWav -WavPath $RefWav -MaxSeconds 10
+            # Pass the (possibly spaced) ref-wav path via a file so Start-Process can't split it on spaces.
+            [System.IO.File]::WriteAllText($refwavPath, $RefWav, $utf8NoBom)
+        } elseif ($Mode -eq "design") {
+            if (-not $Instruct) { throw "Describe the voice (e.g. 'warm female, calm, British accent')." }
+            [System.IO.File]::WriteAllText($instructPath, $Instruct, $utf8NoBom)
+        }
+        $out = Join-Path $ttsDir "tts-test.wav"
+        $status = Join-Path $ttsDir "tts-test-status.json"
+        $olog = Join-Path $ttsDir "tts-run-out.log"; $elog = Join-Path $ttsDir "tts-run-err.log"
+        if (-not $Lang) { $Lang = "auto" }
+        $script = Ensure-ShadowVoiceTtsTestScript
+        @{ state = "starting" } | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath $status
+        # All free-text / spaced values (ref-wav path, transcript, instruct) are passed as FILE paths
+        # under the install dir (no spaces), so Start-Process never splits them.
+        $psArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script, "-Exe", $exe, "-Model", $model, "-Codec", $codec, "-Lang", $Lang, "-PromptPath", $prompt, "-OutWav", $out, "-StatusPath", $status, "-OutLog", $olog, "-ErrLog", $elog, "-Mode", $Mode, "-RefWavPath", $refwavPath, "-RefTextPath", $reftextPath, "-InstructPath", $instructPath)
+        Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WindowStyle Hidden | Out-Null
+        return $out
+    }
+
     function Get-ShadowLlamacppDir {
         $dir = Join-Path $scriptDir "llamacpp"
         foreach ($sub in @($dir, (Join-Path $dir "bin"), (Join-Path $dir "models"))) {
@@ -3165,6 +3485,261 @@ try {
                     continue
                 }
                 Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405
+                continue
+            }
+
+            # ---- Local voice STT manager endpoints (sherpa-onnx) ----
+            if ($urlPath -eq "/api/voice/stt/status") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{
+                    status = "success"
+                    backend = (Get-ShadowLlamacppBackend)
+                    cliInstalled = [bool](Get-ShadowVoiceSttExe)
+                    models = (Get-ShadowVoiceSttModels)
+                    catalog = @("parakeet")
+                }) 200
+                continue
+            }
+            if ($urlPath -eq "/api/voice/stt/install") {
+                if ($request.HttpMethod -ne "POST") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                try {
+                    $asset = Get-ShadowVoiceSherpaCliUrl
+                    if (-not $asset.url) { throw "No sherpa-onnx Windows x64 tarball found in the latest release." }
+                    $status = Join-Path (Get-ShadowVoiceDir) "cli-install-status.json"
+                    Start-ShadowVoiceTarDownload -Url $asset.url -DestDir (Join-Path (Get-ShadowVoiceDir) "bin") -StatusPath $status -TarName "sherpa-cli.tar.bz2"
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; tag = $asset.tag; asset = $asset.name }) 200
+                } catch {
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = $_.Exception.Message }) 200
+                }
+                continue
+            }
+            if ($urlPath -eq "/api/voice/stt/install-status") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                $st = Read-ShadowJsonFile (Join-Path (Get-ShadowVoiceDir) "cli-install-status.json")
+                $exe = Get-ShadowVoiceSttExe
+                $state = "not_installed"
+                if ($st -and $st.state -eq "error") { $state = "error" }
+                elseif ($st -and ([string]$st.state -in @("starting", "downloading", "extracting"))) { $state = "installing" }
+                elseif ($exe) { $state = "installed" }
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; state = $state; cliInstalled = [bool]$exe; error = (if ($st -and $st.state -eq "error") { [string]$st.error } else { "" }) }) 200
+                continue
+            }
+            if ($urlPath -eq "/api/voice/stt/model/download") {
+                if ($request.HttpMethod -ne "POST") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                try {
+                    $reader = New-Object System.IO.StreamReader($request.InputStream)
+                    $payload = $reader.ReadToEnd() | ConvertFrom-Json
+                    $key = [string]$payload.model
+                    $cat = @{
+                        parakeet = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2"
+                        whisper  = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-turbo.tar.bz2"
+                    }
+                    if (-not $key) { $key = "parakeet" }
+                    if (-not $cat.ContainsKey($key)) { throw "Unknown STT model '$key'." }
+                    $status = Join-Path (Get-ShadowVoiceDir) "stt-model-status.json"
+                    Start-ShadowVoiceTarDownload -Url $cat[$key] -DestDir (Get-ShadowVoiceSttModelsDir) -StatusPath $status -TarName "stt-model.tar.bz2"
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; model = $key }) 200
+                } catch {
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = $_.Exception.Message }) 200
+                }
+                continue
+            }
+            if ($urlPath -eq "/api/voice/stt/model/download-status") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                $st = Read-ShadowJsonFile (Join-Path (Get-ShadowVoiceDir) "stt-model-status.json")
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; download = $st }) 200
+                continue
+            }
+            if ($urlPath -eq "/api/voice/stt/test") {
+                if ($request.HttpMethod -ne "POST") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                try {
+                    $reader = New-Object System.IO.StreamReader($request.InputStream)
+                    $rbody = $reader.ReadToEnd(); $key = ""
+                    if ($rbody) { try { $key = [string]($rbody | ConvertFrom-Json).model } catch {} }
+                    $exe = Get-ShadowVoiceSttExe
+                    if (-not $exe) { throw "Install the speech engine first." }
+                    $modelDir = Get-ShadowSttModelDir -Key $key
+                    if (-not $modelDir) { throw "Download an STT model first." }
+                    $margs = Get-ShadowSttRecognizerArgs -ModelDir $modelDir
+                    if (-not $margs) {
+                        $mst = Read-ShadowJsonFile (Join-Path (Get-ShadowVoiceDir) "stt-model-status.json")
+                        if ($mst -and $mst.state -and $mst.state -ne "done") { throw "Model is still $($mst.state) - wait until it reads 'Model downloaded', then try again." }
+                        throw "Model files incomplete in [$modelDir]."
+                    }
+                    $wav = (Get-ChildItem $modelDir -Filter "*.wav" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+                    if (-not $wav) { throw "No sample wav in the model to test with." }
+                    $out = Join-Path (Get-ShadowVoiceDir) "stt-test-out.txt"
+                    $errf = Join-Path (Get-ShadowVoiceDir) "stt-test-err.txt"
+                    Remove-Item $out, $errf -Force -ErrorAction SilentlyContinue
+                    $a = $margs + @("--decoding-method=greedy_search", "--num-threads=4", "--provider=cpu", ('"' + $wav + '"'))
+                    Start-Process -FilePath $exe -ArgumentList $a -WorkingDirectory (Split-Path $exe) -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $errf | Out-Null
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; started = $true; model = (Split-Path $modelDir -Leaf); wav = (Split-Path $wav -Leaf) }) 200
+                } catch {
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = $_.Exception.Message }) 200
+                }
+                continue
+            }
+            if ($urlPath -eq "/api/voice/stt/test-result") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                $out = Join-Path (Get-ShadowVoiceDir) "stt-test-out.txt"
+                $transcript = ""
+                $done = $false
+                if (Test-Path $out) {
+                    $content = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue)
+                    $m = [regex]::Match($content, '"text"\s*:\s*"([^"]*)"')
+                    if ($m.Success) { $transcript = $m.Groups[1].Value; $done = $true }
+                }
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; done = $done; transcript = $transcript }) 200
+                continue
+            }
+            # Transcribe an arbitrary wav (used to auto-fill the clone transcript) via the installed Parakeet model.
+            if ($urlPath -eq "/api/voice/stt/transcribe") {
+                if ($request.HttpMethod -ne "POST") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                try {
+                    $reader = New-Object System.IO.StreamReader($request.InputStream)
+                    $payload = $reader.ReadToEnd() | ConvertFrom-Json
+                    $wavIn = ([string]$payload.wav).Trim().Trim('"').Trim()
+                    $key = [string]$payload.model
+                    if (-not $wavIn) { throw "No audio path provided." }
+                    if (-not (Test-Path $wavIn)) { throw "Audio file not found: $wavIn" }
+                    # Trim to the first 10s so the transcript matches the clip voice-cloning will use.
+                    $wavIn = Get-ShadowTrimmedWav -WavPath $wavIn -MaxSeconds 10
+                    $exe = Get-ShadowVoiceSttExe
+                    if (-not $exe) { throw "Install the speech engine (STT) first - see the section above." }
+                    $modelDir = Get-ShadowSttModelDir -Key $key
+                    if (-not $modelDir) { throw "Download an STT model first - see the section above." }
+                    $margs = Get-ShadowSttRecognizerArgs -ModelDir $modelDir
+                    if (-not $margs) { throw "STT model files incomplete." }
+                    $out = Join-Path (Get-ShadowVoiceDir) "stt-transcribe-out.txt"
+                    $errf = Join-Path (Get-ShadowVoiceDir) "stt-transcribe-err.txt"
+                    Remove-Item $out, $errf -Force -ErrorAction SilentlyContinue
+                    $a = $margs + @("--decoding-method=greedy_search", "--num-threads=4", "--provider=cpu", ('"' + $wavIn + '"'))
+                    Start-Process -FilePath $exe -ArgumentList $a -WorkingDirectory (Split-Path $exe) -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $errf | Out-Null
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; started = $true }) 200
+                } catch {
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = $_.Exception.Message }) 200
+                }
+                continue
+            }
+            if ($urlPath -eq "/api/voice/stt/transcribe-result") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                $out = Join-Path (Get-ShadowVoiceDir) "stt-transcribe-out.txt"
+                $errf = Join-Path (Get-ShadowVoiceDir) "stt-transcribe-err.txt"
+                $transcript = ""; $done = $false; $err = ""
+                if (Test-Path $out) {
+                    $content = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue)
+                    $m = [regex]::Match($content, '"text"\s*:\s*"([^"]*)"')
+                    if ($m.Success) { $transcript = $m.Groups[1].Value; $done = $true }
+                }
+                if (-not $done -and (Test-Path $errf)) {
+                    $econt = [string](Get-Content $errf -Raw -ErrorAction SilentlyContinue)
+                    if ($econt -match '(?im)(error|exception|expect|failed|invalid)') { $err = ($econt -split "`n" | Select-Object -Last 1) }
+                }
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; done = $done; transcript = $transcript; error = $err }) 200
+                continue
+            }
+
+            # ---- Qwen3-TTS (local voice) endpoints ----
+            if ($urlPath -eq "/api/voice/tts/status") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                $exe = Get-ShadowVoiceTtsExe
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{
+                    status          = "success"
+                    backend         = (Get-ShadowVoiceTtsBackend)
+                    engineInstalled = [bool]$exe
+                    models          = (Get-ShadowVoiceTtsModels)
+                    codecInstalled  = [bool](Get-ShadowVoiceTtsCodec)
+                    baseInstalled   = [bool](Get-ShadowVoiceTtsTalker -Variant "base")
+                    designInstalled = [bool](Get-ShadowVoiceTtsTalker -Variant "voicedesign")
+                }) 200
+                continue
+            }
+            if ($urlPath -eq "/api/voice/tts/install") {
+                if ($request.HttpMethod -ne "POST") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                try {
+                    $url = Get-ShadowVoiceTtsEngineUrl
+                    $status = Join-Path (Get-ShadowVoiceTtsDir) "tts-engine-status.json"
+                    Start-ShadowVoiceTtsEngineDownload -Url $url -StatusPath $status
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; backend = (Get-ShadowVoiceTtsBackend) }) 200
+                } catch {
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = $_.Exception.Message }) 200
+                }
+                continue
+            }
+            if ($urlPath -eq "/api/voice/tts/install-status") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                $st = Read-ShadowJsonFile (Join-Path (Get-ShadowVoiceTtsDir) "tts-engine-status.json")
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; install = $st }) 200
+                continue
+            }
+            if ($urlPath -eq "/api/voice/tts/model/download") {
+                if ($request.HttpMethod -ne "POST") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                try {
+                    $reader = New-Object System.IO.StreamReader($request.InputStream)
+                    $payload = $reader.ReadToEnd() | ConvertFrom-Json
+                    $tier = [string]$payload.model
+                    if (-not $tier) { $tier = "1.7b" }
+                    $variant = [string]$payload.variant
+                    if (-not $variant) { $variant = "base" }
+                    if (@("base", "voicedesign", "customvoice") -notcontains $variant) { throw "Unknown voice variant '$variant'." }
+                    if (@("0.6b", "1.7b") -notcontains $tier) { throw "Unknown voice model '$tier'." }
+                    $base = "https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/"
+                    $talkerUrl = $base + "qwen-talker-$tier-$variant-Q8_0.gguf"
+                    $codecUrl = $base + "qwen-tokenizer-12hz-Q8_0.gguf"
+                    $status = Join-Path (Get-ShadowVoiceTtsDir) "tts-model-status.json"
+                    Start-ShadowVoiceTtsModelDownload -TalkerUrl $talkerUrl -CodecUrl $codecUrl -StatusPath $status
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; model = $tier; variant = $variant }) 200
+                } catch {
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = $_.Exception.Message }) 200
+                }
+                continue
+            }
+            if ($urlPath -eq "/api/voice/tts/model/download-status") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                $st = Read-ShadowJsonFile (Join-Path (Get-ShadowVoiceTtsDir) "tts-model-status.json")
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; download = $st }) 200
+                continue
+            }
+            if ($urlPath -eq "/api/voice/tts/test") {
+                if ($request.HttpMethod -ne "POST") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                try {
+                    $reader = New-Object System.IO.StreamReader($request.InputStream)
+                    $payload = $reader.ReadToEnd() | ConvertFrom-Json
+                    $text = [string]$payload.text
+                    $lang = [string]$payload.lang
+                    $mode = [string]$payload.voiceMode; if (-not $mode) { $mode = "default" }
+                    $refWav = [string]$payload.refWav
+                    $refText = [string]$payload.refText
+                    $instruct = [string]$payload.instruct
+                    Start-ShadowVoiceTtsTest -Text $text -Lang $lang -Mode $mode -RefWav $refWav -RefText $refText -Instruct $instruct | Out-Null
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; started = $true }) 200
+                } catch {
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = $_.Exception.Message }) 200
+                }
+                continue
+            }
+            if ($urlPath -eq "/api/voice/tts/test-result") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                $st = Read-ShadowJsonFile (Join-Path (Get-ShadowVoiceTtsDir) "tts-test-status.json")
+                $state = if ($st) { [string]$st.state } else { "" }
+                $err = if ($st) { [string]$st.error } else { "" }
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; state = $state; done = ($state -eq "done"); error = $err }) 200
+                continue
+            }
+            if ($urlPath -eq "/api/voice/tts/test-audio") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                $wav = Join-Path (Get-ShadowVoiceTtsDir) "tts-test.wav"
+                if (Test-Path $wav) {
+                    $bytes = [System.IO.File]::ReadAllBytes($wav)
+                    Add-ShadowCorsOrigin $response
+                    $response.StatusCode = 200
+                    $response.ContentType = "audio/wav"
+                    $response.ContentLength64 = $bytes.Length
+                    $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                    $response.Close()
+                } else {
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "No audio yet" }) 404
+                }
                 continue
             }
 

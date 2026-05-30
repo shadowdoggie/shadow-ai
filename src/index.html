@@ -522,6 +522,91 @@
           <span class="field-hint" style="display:block;margin-top:4px;">When a newer release is available, Shadow shows a one-time notice with a link to download the installer. Shadow never updates itself without your click.</span>
         </div>
 
+        <!-- Local Voice (experimental) -->
+        <div class="form-group">
+          <label>Local Voice <span class="field-hint" style="text-transform:none;">(experimental)</span></label>
+          <span class="field-hint" style="display:block;margin-top:2px;">
+            Run speech-to-text fully locally (no cloud), via sherpa-onnx. Choose Parakeet (fast, 25 languages) or Whisper Turbo (slower, ~99 languages). This is an early preview to validate the engine — the full local voice mode (local STT + TTS + brain) is in progress. STT runs fast even on CPU.
+          </span>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap;">
+            <button id="btn-voice-stt-install" class="secondary-button" type="button">Install speech engine</button>
+            <span id="voice-stt-install-status" class="field-hint" style="margin:0;">Checking...</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+            <select id="voice-stt-model-select" style="min-width:190px;">
+              <option value="parakeet">Parakeet (fast, 25 langs)</option>
+              <option value="whisper">Whisper Turbo (~99 langs)</option>
+            </select>
+            <button id="btn-voice-stt-download" class="secondary-button" type="button">Download model</button>
+            <span id="voice-stt-model-status" class="field-hint" style="margin:0;"></span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+            <button id="btn-voice-stt-test" class="primary-button" type="button">Test transcription</button>
+            <span id="voice-stt-test-result" class="field-hint" style="margin:0;"></span>
+          </div>
+
+          <hr style="border:none;border-top:1px solid var(--border,#333);margin:14px 0 10px;">
+          <span class="field-hint" style="display:block;">
+            Local text-to-speech via Qwen3-TTS. Cross-vendor: auto-picks a Vulkan build for NVIDIA/AMD/Intel GPUs, or a CPU build. The 1.7B voice sounds best; 0.6B is the lightweight option. Output is auto-normalized for loudness.
+          </span>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap;">
+            <button id="btn-voice-tts-install" class="secondary-button" type="button">Install TTS engine</button>
+            <span id="voice-tts-install-status" class="field-hint" style="margin:0;">Checking...</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+            <select id="voice-tts-model-select" style="min-width:200px;">
+              <option value="1.7b">Qwen3-TTS 1.7B (best quality)</option>
+              <option value="0.6b">Qwen3-TTS 0.6B (lightweight)</option>
+            </select>
+            <button id="btn-voice-tts-download" class="secondary-button" type="button">Download voice model</button>
+            <span id="voice-tts-model-status" class="field-hint" style="margin:0;"></span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+            <select id="voice-tts-lang-select" style="min-width:130px;">
+              <option value="auto">Auto-detect</option>
+              <option value="English">English</option>
+              <option value="Chinese">Chinese</option>
+              <option value="German">German</option>
+              <option value="French">French</option>
+              <option value="Spanish">Spanish</option>
+              <option value="Italian">Italian</option>
+              <option value="Portuguese">Portuguese</option>
+              <option value="Japanese">Japanese</option>
+              <option value="Korean">Korean</option>
+              <option value="Russian">Russian</option>
+            </select>
+            <input id="voice-tts-text" type="text" placeholder="Text to speak..." value="Hello! This is a local Qwen 3 text to speech voice." style="flex:1;min-width:220px;">
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+            <label class="field-hint" style="margin:0;">Voice:</label>
+            <select id="voice-tts-voice-mode" style="min-width:160px;">
+              <option value="default">Default voice</option>
+              <option value="design">Describe a voice</option>
+              <option value="clone">Clone from a sample</option>
+            </select>
+          </div>
+          <div id="voice-tts-design-row" style="display:none;flex-direction:column;gap:6px;margin-top:8px;">
+            <input id="voice-tts-instruct" type="text" placeholder="Describe the voice, e.g. 'warm female, calm, British accent'" style="width:100%;">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <button id="btn-voice-tts-design-download" class="secondary-button" type="button">Download voice-design model</button>
+              <span id="voice-tts-design-status" class="field-hint" style="margin:0;"></span>
+            </div>
+          </div>
+          <div id="voice-tts-clone-row" style="display:none;flex-direction:column;gap:6px;margin-top:8px;">
+            <input id="voice-tts-ref-wav" type="text" placeholder="Path to a short voice sample (.wav), e.g. C:\\voices\\me.wav" style="width:100%;">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <button id="btn-voice-tts-transcribe" class="secondary-button" type="button">Auto-transcribe sample</button>
+              <span id="voice-tts-transcribe-status" class="field-hint" style="margin:0;">Uses local STT to fill the transcript below.</span>
+            </div>
+            <input id="voice-tts-ref-text" type="text" placeholder="Transcript of that sample (auto-filled, or type it yourself)" style="width:100%;">
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+            <button id="btn-voice-tts-test" class="primary-button" type="button">Test TTS</button>
+            <span id="voice-tts-test-result" class="field-hint" style="margin:0;"></span>
+          </div>
+          <audio id="voice-tts-audio" style="display:none;"></audio>
+        </div>
+
         <!-- System Instruction / Personality Prompt -->
         <div class="form-group">
            <label for="input-system-instruction" style="display:none">System Instruction (Personality)</label>
@@ -860,8 +945,8 @@
   <video id="screen-video" autoplay playsinline style="display:none;"></video>
   <canvas id="screen-canvas" style="display:none;"></canvas>
 
-  <script src="scripts/01-state-dom.js?v=llamacpp-e-20260530"></script>
-  <script src="scripts/02-boot-ui.js?v=llamacpp-i-20260530"></script>
+  <script src="scripts/01-state-dom.js?v=voice-whisper-20260530"></script>
+  <script src="scripts/02-boot-ui.js?v=voice-whisper-20260530"></script>
   <script src="scripts/03-screen-config.js?v=llamacpp-20260530"></script>
   <script src="scripts/04-audio.js?v=audio-stall-recovery-20260528"></script>
   <script src="scripts/05-live-connection.js?v=llamacpp-h-20260530"></script>
