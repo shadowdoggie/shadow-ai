@@ -53,8 +53,8 @@ on your machine**. Gmail/Calendar/Drive/Contacts are optional via an in-app setu
 > Get-FileHash .\ShadowAI-Setup.exe -Algorithm SHA256
 > ```
 >
-> v1.3.0 `ShadowAI-Setup.exe`:
-> `df3fed0d14654dc397f043afa56d28a3f07ff659bca5bfe5a888109bfc8ac31a`
+> v1.4.0 `ShadowAI-Setup.exe`:
+> `6123aa6ed8983bc60c4759a0a9b89fe3fc64402c4df23113c7f52220d7f4b606`
 
 See **[SETUP.md](SETUP.md)** for full install, developer, and build-from-source steps.
 
@@ -62,12 +62,10 @@ See **[SETUP.md](SETUP.md)** for full install, developer, and build-from-source 
 
 No promises or timelines, but here's where my head's at right now:
 
-- **Local LLM for subagents — ✅ shipped (v1.3.0).** Background subagents can run on a
-  **local Ollama** instance on your own machine. The model list is auto-detected from your
-  running Ollama — just install it, pull a model, and pick it in Settings — with a
-  configurable context size (`num_ctx`).
-- **Custom (OpenAI-compatible) endpoint — current priority.** Next up: point subagents at
-  any OpenAI-compatible endpoint (your own inference server, LM Studio, vLLM, etc.).
+- **Local LLM for subagents — ✅ shipped (v1.4.0).** Run background subagents on a **local
+  Ollama**, **LM Studio**, or **any custom OpenAI-compatible endpoint** (llama.cpp, vLLM, your
+  own gateway, etc.). Each auto-detects the available models from the endpoint — just pick one
+  in Settings. Ollama also exposes a configurable context size (`num_ctx`).
 - **Local voice model — in progress.** Bringing local models to the realtime voice path too,
   not just subagents.
 - **Local TTS — eventually.** Looking at **Qwen3-TTS** as a possible fully-local
