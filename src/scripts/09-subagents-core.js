@@ -619,6 +619,11 @@ function isEvidenceRequiredForSubagentSuccess(task) {
 function getSubagentFinishReadiness(task, finalStatus, verification, subagentRecord) {
   const status = String(finalStatus || '').toLowerCase();
   if (status !== 'success') return { ok: true, reason: '' };
+  // Local models are weak at producing a separate verification step; accept any successful
+  // tool action as sufficient evidence so simple tasks can actually finish instead of looping.
+  if (subagentRecord && subagentRecord.provider === 'ollama_local' && (Number(subagentRecord.successfulToolCount) || 0) > 0) {
+    return { ok: true, reason: '', evidence: getSubagentEvidenceSummary(subagentRecord, 6) };
+  }
   if (!isEvidenceRequiredForSubagentSuccess(task)) return { ok: true, reason: '' };
   const requiredTools = getSubagentSuccessEvidenceRequirements(task);
   const evidence = getSubagentEvidenceSummary(subagentRecord, 6);
@@ -866,6 +871,12 @@ function hasImplicitSubagentReference(text) {
 function isSubagentCancelUtterance(text) {
   const lower = String(text || '').toLowerCase();
   if (!/\b(stop|cancel|kill|terminate|abort|shut\s*down|end)\b/.test(lower)) return false;
+  // A correction/redirection ("stop doing X, do Y instead", "stop and use Z", "actually make it
+  // ...") is STEERING, not a full cancel. Don't kill the subagent over a stop-word that is really
+  // a course correction — only treat it as a cancel when there is no redirecting instruction.
+  if (/\b(instead|rather|on second thought|actually|and (?:then |now |instead )?(?:do|use|make|try|switch|change|add|run|go|focus|create|write|build|continue)|now (?:do|use|make|try|switch|change|focus|continue)|switch to|change (?:it |that )?to|use \w+ instead|keep going)\b/.test(lower)) {
+    return false;
+  }
   return hasExplicitSubagentReference(lower) || hasImplicitSubagentReference(lower);
 }
 
@@ -916,25 +927,27 @@ function maybeDirectHandleSubagentUtterance(text) {
     if (target) {
       directSteeredTurns.add(key);
       trimDirectSteeringCache();
-      const directSteerPromise = typeof interruptSubagentWithSelectedModelFeedback === 'function'
-        ? interruptSubagentWithSelectedModelFeedback(
-          target,
-          feedback,
-          'Direct user correction.',
-          'A transcript-level user correction targeted the latest running subagent; refine it through the selected subagent model before injecting it.'
-        )
-        : Promise.resolve({
-          feedback,
-          interrupted: interruptSubagentWithFeedback(target, feedback, 'Direct user correction.')
-        });
-      return directSteerPromise.then(result => {
-        if (result && result.interrupted) {
-          const assistantLabel = typeof getAssistantName === 'function' ? getAssistantName() : 'Shadow';
-          notifyModelOfSubagentUpdate(`[DIRECT SUBAGENT INTERRUPT] User feedback interrupted subagent ${target.id} and was queued into its preserved context after selected-model steering refinement: "${result.feedback || feedback}". Speak as ${assistantLabel} in first person: say I stopped the current background step and I am continuing with the correction.`);
+      // Interrupt IMMEDIATELY with the raw correction so the subagent stops now and the voice is
+      // not blocked on a slow refine, then refine in the background and queue the refined version
+      // as a follow-up clarification.
+      const interrupted = interruptSubagentWithFeedback(target, feedback, 'Direct user correction.');
+      if (interrupted) {
+        const assistantLabel = typeof getAssistantName === 'function' ? getAssistantName() : 'Shadow';
+        notifyModelOfSubagentUpdate(`[DIRECT SUBAGENT INTERRUPT] User feedback interrupted subagent ${target.id} and was queued into its preserved context: "${feedback}". Speak as ${assistantLabel} in first person: say I stopped the current background step and I am continuing with the correction.`);
+        if (typeof isSubagentPromptBrainSteeringEnabled === 'function' && isSubagentPromptBrainSteeringEnabled()
+            && typeof refineSubagentSteeringFeedbackWithSelectedModel === 'function') {
+          Promise.resolve(refineSubagentSteeringFeedbackWithSelectedModel(
+            target,
+            feedback,
+            'A transcript-level user correction targeted the latest running subagent; refine it through the selected subagent model.'
+          )).then(res => {
+            const refined = res && res.refinedBySubagentModel ? String(res.feedback || '').trim() : '';
+            if (refined && refined !== String(feedback || '').trim() && !isSubagentCancelled(target) && Array.isArray(target.steerQueue)) {
+              target.steerQueue.push(`[Refined clarification of the previous correction] ${refined}`);
+            }
+          }).catch(() => { /* best-effort; the raw correction was already applied */ });
         }
-      }).catch(err => {
-        console.warn('[Subagent Direct Steering] Failed to interrupt subagent with user correction:', err);
-      });
+      }
     }
     return;
   }

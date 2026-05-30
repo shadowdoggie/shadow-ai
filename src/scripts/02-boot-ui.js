@@ -310,11 +310,90 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  function setLmstudioStatus(msg, isError) {
+    if (!lmstudioStatus) return;
+    lmstudioStatus.textContent = msg;
+    lmstudioStatus.style.color = isError ? '#ff6b6b' : 'rgba(255,255,255,0.6)';
+  }
+
+  // Auto-detect models loaded in the user's LM Studio server and fill the picker.
+  async function refreshLmstudioModels(preferredModel) {
+    if (!selectSubagentModelLmstudioLocal) return;
+    const endpoint = (inputLmstudioEndpoint && inputLmstudioEndpoint.value.trim()) || lmstudioEndpoint || 'http://localhost:1234/v1';
+    const want = preferredModel || (subagentProvider === 'lmstudio_local' ? subagentModel : '') || selectSubagentModelLmstudioLocal.value;
+    setLmstudioStatus('Detecting LM Studio models…', false);
+    try {
+      const res = await fetchLocalApiWithTimeout(`/api/lmstudio/models?endpoint=${encodeURIComponent(endpoint)}`, {}, LOCAL_API_TIMEOUT_MS);
+      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
+      const models = (data && Array.isArray(data.models)) ? data.models : [];
+      selectSubagentModelLmstudioLocal.innerHTML = '';
+      if (!models.length) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'No LM Studio models found';
+        selectSubagentModelLmstudioLocal.appendChild(opt);
+        setLmstudioStatus((data && (data.error || data.hint)) ? (data.error || data.hint) : 'No models found. Load a model and start LM Studio\'s server, then Refresh.', true);
+        return;
+      }
+      for (const name of models) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        selectSubagentModelLmstudioLocal.appendChild(opt);
+      }
+      if (want && models.includes(want)) selectSubagentModelLmstudioLocal.value = want;
+      setLmstudioStatus(`Found ${models.length} model${models.length === 1 ? '' : 's'}. Pick one and Save.`, false);
+    } catch (err) {
+      selectSubagentModelLmstudioLocal.innerHTML = '<option value="">No LM Studio models found</option>';
+      setLmstudioStatus('Could not reach LM Studio. Make sure its local server is running, then Refresh.', true);
+    }
+  }
+
+  function setCustomStatus(msg, isError) {
+    if (!customStatus) return;
+    customStatus.textContent = msg;
+    customStatus.style.color = isError ? '#ff6b6b' : 'rgba(255,255,255,0.6)';
+  }
+
+  // Auto-fetch models from any OpenAI-compatible endpoint (llama.cpp, vLLM, etc.) if it exposes
+  // /models; otherwise the user types the model name manually.
+  async function refreshCustomModels() {
+    const endpoint = (inputCustomEndpoint && inputCustomEndpoint.value.trim()) || customEndpoint || '';
+    if (!endpoint) { setCustomStatus('Enter the API base URL first.', true); return; }
+    const key = (inputCustomApiKey && inputCustomApiKey.value.trim()) || customApiKey || '';
+    const datalist = document.getElementById('datalist-custom-models');
+    setCustomStatus('Fetching models…', false);
+    try {
+      const url = `/api/openai-compat/models?endpoint=${encodeURIComponent(endpoint)}${key ? `&key=${encodeURIComponent(key)}` : ''}`;
+      const res = await fetchLocalApiWithTimeout(url, {}, LOCAL_API_TIMEOUT_MS);
+      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
+      const models = (data && Array.isArray(data.models)) ? data.models : [];
+      if (datalist) datalist.innerHTML = '';
+      if (!models.length) {
+        setCustomStatus((data && data.error) ? data.error : 'No models returned — type the model name manually.', true);
+        return;
+      }
+      if (datalist) {
+        for (const name of models) {
+          const opt = document.createElement('option');
+          opt.value = name;
+          datalist.appendChild(opt);
+        }
+      }
+      if (inputCustomModel && !inputCustomModel.value && models.length) inputCustomModel.value = models[0];
+      setCustomStatus(`Found ${models.length} model${models.length === 1 ? '' : 's'} — pick a suggestion or type one.`, false);
+    } catch (err) {
+      setCustomStatus('Could not reach the endpoint. You can still type the model name manually.', true);
+    }
+  }
+
   function updateProviderUI() {
     groupMinimaxKey.style.display = 'none';
     groupMoonshotKey.style.display = 'none';
     groupOllamaSettings.style.display = 'none';
     if (groupOllamaLocalSettings) groupOllamaLocalSettings.style.display = 'none';
+    if (groupLmstudioLocalSettings) groupLmstudioLocalSettings.style.display = 'none';
+    if (groupCustomSettings) groupCustomSettings.style.display = 'none';
     groupOpenaiCodexAuth.style.display = 'none';
     selectSubagentModelGemini.style.display = 'none';
     selectSubagentModelOpenaiCodex.style.display = 'none';
@@ -322,6 +401,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     selectSubagentModelMoonshot.style.display = 'none';
     selectSubagentModelOllama.style.display = 'none';
     if (selectSubagentModelOllamaLocal) selectSubagentModelOllamaLocal.style.display = 'none';
+    if (selectSubagentModelLmstudioLocal) selectSubagentModelLmstudioLocal.style.display = 'none';
 
     const prov = selectSubagentProvider.value;
     if (prov === 'gemini') selectSubagentModelGemini.style.display = 'block';
@@ -340,6 +420,19 @@ window.addEventListener('DOMContentLoaded', async () => {
       if (inputOllamaLocalNumCtx) inputOllamaLocalNumCtx.value = ollamaLocalNumCtx;
       refreshOllamaLocalModels();
     }
+    if (prov === 'lmstudio_local') {
+      if (groupLmstudioLocalSettings) groupLmstudioLocalSettings.style.display = 'block';
+      if (selectSubagentModelLmstudioLocal) selectSubagentModelLmstudioLocal.style.display = 'block';
+      if (inputLmstudioEndpoint) inputLmstudioEndpoint.value = lmstudioEndpoint;
+      refreshLmstudioModels();
+    }
+    if (prov === 'custom_openai') {
+      if (groupCustomSettings) groupCustomSettings.style.display = 'block';
+      if (inputCustomEndpoint) inputCustomEndpoint.value = customEndpoint;
+      if (inputCustomApiKey) inputCustomApiKey.value = customApiKey;
+      if (inputCustomModel && subagentProvider === 'custom_openai' && subagentModel) inputCustomModel.value = subagentModel;
+      if (customEndpoint) refreshCustomModels();
+    }
     updateCodexReasoningUI();
   }
   updateProviderUI();
@@ -348,6 +441,19 @@ window.addEventListener('DOMContentLoaded', async () => {
     btnRefreshOllamaLocalModels.addEventListener('click', () => {
       if (inputOllamaLocalEndpoint) ollamaLocalEndpoint = inputOllamaLocalEndpoint.value.trim() || 'http://localhost:11434';
       refreshOllamaLocalModels();
+    });
+  }
+  if (btnRefreshLmstudioModels) {
+    btnRefreshLmstudioModels.addEventListener('click', () => {
+      if (inputLmstudioEndpoint) lmstudioEndpoint = inputLmstudioEndpoint.value.trim() || 'http://localhost:1234/v1';
+      refreshLmstudioModels();
+    });
+  }
+  if (btnRefreshCustomModels) {
+    btnRefreshCustomModels.addEventListener('click', () => {
+      if (inputCustomEndpoint) customEndpoint = inputCustomEndpoint.value.trim();
+      if (inputCustomApiKey) customApiKey = inputCustomApiKey.value.trim();
+      refreshCustomModels();
     });
   }
   if (selectSubagentModelOpenaiCodex) {
@@ -509,9 +615,20 @@ window.addEventListener('DOMContentLoaded', async () => {
       else if (subagentProvider === 'moonshot') subagentModel = selectSubagentModelMoonshot.value;
       else if (subagentProvider === 'ollama') subagentModel = selectSubagentModelOllama.value;
       else if (subagentProvider === 'ollama_local') subagentModel = selectSubagentModelOllamaLocal ? selectSubagentModelOllamaLocal.value : '';
+      else if (subagentProvider === 'lmstudio_local') subagentModel = selectSubagentModelLmstudioLocal ? selectSubagentModelLmstudioLocal.value : '';
+      else if (subagentProvider === 'custom_openai') subagentModel = inputCustomModel ? inputCustomModel.value.trim() : '';
       else subagentModel = '';
       if (inputOllamaLocalEndpoint) {
         ollamaLocalEndpoint = inputOllamaLocalEndpoint.value.trim() || 'http://localhost:11434';
+      }
+      if (inputLmstudioEndpoint) {
+        lmstudioEndpoint = inputLmstudioEndpoint.value.trim() || 'http://localhost:1234/v1';
+      }
+      if (inputCustomEndpoint) {
+        customEndpoint = inputCustomEndpoint.value.trim();
+      }
+      if (inputCustomApiKey) {
+        customApiKey = inputCustomApiKey.value.trim();
       }
       if (inputOllamaLocalNumCtx) {
         const parsedCtx = parseInt(inputOllamaLocalNumCtx.value, 10);
@@ -540,6 +657,9 @@ window.addEventListener('DOMContentLoaded', async () => {
       localStorage.setItem('shadow_ollama_key', ollamaApiKey);
       localStorage.setItem('shadow_ollama_local_endpoint', ollamaLocalEndpoint);
       localStorage.setItem('shadow_ollama_local_num_ctx', String(ollamaLocalNumCtx));
+      localStorage.setItem('shadow_lmstudio_endpoint', lmstudioEndpoint);
+      localStorage.setItem('shadow_custom_endpoint', customEndpoint);
+      localStorage.setItem('shadow_custom_api_key', customApiKey);
       localStorage.setItem('shadow_searxng_url', searxngSearchUrl);
       localStorage.setItem('shadow_searxng_port', searxngSearchPort);
 

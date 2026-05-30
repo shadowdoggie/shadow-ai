@@ -2805,6 +2805,93 @@ try {
                 continue
             }
 
+            # List models available in a local LM Studio server (OpenAI-style /v1/models) for the
+            # subagent model picker. Server-side GET so the browser never deals with CORS.
+            if ($urlPath -eq "/api/lmstudio/models") {
+                if ($request.HttpMethod -eq "OPTIONS") {
+                    Add-ShadowCorsOrigin $response
+                    $response.Headers.Add("Access-Control-Allow-Methods", "GET, OPTIONS")
+                    $response.Headers.Add("Access-Control-Allow-Headers", "Content-Type")
+                    $response.StatusCode = 200
+                    $response.Close()
+                    continue
+                }
+                if ($request.HttpMethod -eq "GET") {
+                    $lmsEndpoint = $request.QueryString["endpoint"]
+                    if ([string]::IsNullOrWhiteSpace($lmsEndpoint)) { $lmsEndpoint = "http://localhost:1234/v1" }
+                    $lmsEndpoint = $lmsEndpoint.TrimEnd('/')
+                    $loopbackOk = $false
+                    try {
+                        $parsedEndpoint = [System.Uri]$lmsEndpoint
+                        if ($parsedEndpoint.Scheme -eq 'http' -and @('localhost','127.0.0.1','::1') -contains $parsedEndpoint.Host) { $loopbackOk = $true }
+                    } catch {}
+                    if (-not $loopbackOk) {
+                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; models = @(); error = "Only local (loopback) LM Studio endpoints are allowed, e.g. http://localhost:1234/v1." }) 400
+                        continue
+                    }
+                    try {
+                        $lmsModels = Invoke-RestMethod -Uri "$lmsEndpoint/models" -Method GET -TimeoutSec 5
+                        $modelIds = @()
+                        if ($lmsModels -and $lmsModels.data) {
+                            $modelIds = @($lmsModels.data | ForEach-Object { $_.id } | Where-Object { $_ })
+                        }
+                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; endpoint = $lmsEndpoint; models = $modelIds }) 200
+                    } catch {
+                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; endpoint = $lmsEndpoint; models = @(); error = "Could not reach LM Studio at $lmsEndpoint. Make sure LM Studio's local server is running."; hint = "In LM Studio: load a model, start the server (Developer tab), then click Refresh. Default URL is http://localhost:1234/v1." }) 502
+                    }
+                    continue
+                }
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405
+                continue
+            }
+
+            # Fetch models from ANY OpenAI-compatible endpoint (llama.cpp, vLLM, remote gateways)
+            # for the custom-provider model picker. Allows http/https (user-entered on their own
+            # machine) and forwards an optional API key.
+            if ($urlPath -eq "/api/openai-compat/models") {
+                if ($request.HttpMethod -eq "OPTIONS") {
+                    Add-ShadowCorsOrigin $response
+                    $response.Headers.Add("Access-Control-Allow-Methods", "GET, OPTIONS")
+                    $response.Headers.Add("Access-Control-Allow-Headers", "Content-Type")
+                    $response.StatusCode = 200
+                    $response.Close()
+                    continue
+                }
+                if ($request.HttpMethod -eq "GET") {
+                    $coEndpoint = $request.QueryString["endpoint"]
+                    if ([string]::IsNullOrWhiteSpace($coEndpoint)) {
+                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; models = @(); error = "No endpoint provided." }) 400
+                        continue
+                    }
+                    $coEndpoint = $coEndpoint.TrimEnd('/')
+                    $coSchemeOk = $false
+                    try {
+                        $parsedEndpoint = [System.Uri]$coEndpoint
+                        if ($parsedEndpoint.Scheme -eq 'http' -or $parsedEndpoint.Scheme -eq 'https') { $coSchemeOk = $true }
+                    } catch {}
+                    if (-not $coSchemeOk) {
+                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; models = @(); error = "Endpoint must be an http(s) URL, e.g. http://localhost:8080/v1." }) 400
+                        continue
+                    }
+                    $coKey = $request.QueryString["key"]
+                    try {
+                        $coHeaders = @{}
+                        if (-not [string]::IsNullOrWhiteSpace($coKey)) { $coHeaders["Authorization"] = "Bearer $coKey" }
+                        $coModels = Invoke-RestMethod -Uri "$coEndpoint/models" -Method GET -Headers $coHeaders -TimeoutSec 6
+                        $coIds = @()
+                        if ($coModels -and $coModels.data) {
+                            $coIds = @($coModels.data | ForEach-Object { $_.id } | Where-Object { $_ })
+                        }
+                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; endpoint = $coEndpoint; models = $coIds }) 200
+                    } catch {
+                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; endpoint = $coEndpoint; models = @(); error = "Could not fetch models from $coEndpoint/models. Your server may not expose /models - you can type the model name manually." }) 502
+                    }
+                    continue
+                }
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405
+                continue
+            }
+
             # Proxy endpoint for third-party AI API calls (bypasses CORS)
             if ($urlPath -eq "/api/proxy") {
                 if ($request.HttpMethod -eq "OPTIONS") {

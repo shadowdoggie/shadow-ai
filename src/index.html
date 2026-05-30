@@ -226,8 +226,8 @@
           <label for="select-live-thinking-level">Voice Reasoning</label>
           <select id="select-live-thinking-level">
             <option value="minimal">Minimal (Fastest)</option>
-            <option value="low" selected>Low (Faster)</option>
-            <option value="medium">Medium (Balanced)</option>
+            <option value="low">Low (Faster)</option>
+            <option value="medium" selected>Medium (Balanced)</option>
             <option value="high">High (Smartest)</option>
             <option value="auto">Auto (Provider Default)</option>
           </select>
@@ -286,6 +286,8 @@
             <option value="moonshot">Canopy Wave API</option>
             <option value="ollama">Ollama Cloud</option>
             <option value="ollama_local">Ollama (Local)</option>
+            <option value="lmstudio_local">LM Studio (Local)</option>
+            <option value="custom_openai">Custom (OpenAI-compatible)</option>
           </select>
         </div>
         
@@ -334,6 +336,10 @@
 
           <select id="select-subagent-model-ollama-local" class="subagent-model-select" style="display: none;">
             <option value="">No local models found</option>
+          </select>
+
+          <select id="select-subagent-model-lmstudio-local" class="subagent-model-select" style="display: none;">
+            <option value="">No LM Studio models found</option>
           </select>
         </div>
 
@@ -391,6 +397,35 @@
           </span>
           <span class="field-hint" style="display:block;margin-top:6px;">
             Runs against your own machine — no API key, fully offline. Install <a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer" style="color:#00f2fe;">Ollama</a>, run a model (e.g. <code>ollama pull llama3.1</code>), then click Refresh to pick it. The model list is auto-detected from your running Ollama.
+          </span>
+        </div>
+
+        <div class="form-group" id="group-lmstudio-local-settings" style="display: none;">
+          <label for="input-lmstudio-endpoint">LM Studio Server URL</label>
+          <input type="text" id="input-lmstudio-endpoint" placeholder="http://localhost:1234/v1" autocomplete="off">
+          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
+            <button id="btn-refresh-lmstudio-models" class="secondary-button" type="button">Refresh models</button>
+            <span id="lmstudio-status" class="field-hint" style="margin:0;">No model loaded yet.</span>
+          </div>
+          <span class="field-hint" style="display:block;margin-top:6px;">
+            Runs against your own machine via LM Studio's local server — no API key. In <a href="https://lmstudio.ai/" target="_blank" rel="noopener noreferrer" style="color:#00f2fe;">LM Studio</a>, load a model and start the server (Developer tab), then click Refresh. The model list is auto-detected. Set the model's <strong>context length and parallelism inside LM Studio</strong> when you load it (LM Studio handles parallel requests, default 4).
+          </span>
+        </div>
+
+        <div class="form-group" id="group-custom-settings" style="display: none;">
+          <label for="input-custom-endpoint">Custom API Base URL (OpenAI-compatible)</label>
+          <input type="text" id="input-custom-endpoint" placeholder="http://localhost:8080/v1" autocomplete="off">
+          <label for="input-custom-api-key" style="display:block;margin-top:10px;">API Key (optional)</label>
+          <input type="password" id="input-custom-api-key" placeholder="Leave blank if your endpoint needs no key" autocomplete="off">
+          <label for="input-custom-model" style="display:block;margin-top:10px;">Model</label>
+          <input type="text" id="input-custom-model" list="datalist-custom-models" placeholder="model name (e.g. from your server)" autocomplete="off">
+          <datalist id="datalist-custom-models"></datalist>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
+            <button id="btn-refresh-custom-models" class="secondary-button" type="button">Fetch models</button>
+            <span id="custom-status" class="field-hint" style="margin:0;">Enter your endpoint, then Fetch models (optional).</span>
+          </div>
+          <span class="field-hint" style="display:block;margin-top:6px;">
+            For any OpenAI-compatible server — <strong>llama.cpp</strong>, vLLM, text-generation-webui, a remote gateway, etc. Point at its base URL (usually ending in <code>/v1</code>). Shadow calls <code>/chat/completions</code> and tries <code>/models</code> to auto-fill the list; if your server doesn't expose <code>/models</code>, just type the model name. Set context length on the server side.
           </span>
         </div>
 
@@ -663,17 +698,17 @@
   <video id="screen-video" autoplay playsinline style="display:none;"></video>
   <canvas id="screen-canvas" style="display:none;"></canvas>
 
-  <script src="scripts/01-state-dom.js?v=ollama-ctx-20260530"></script>
-  <script src="scripts/02-boot-ui.js?v=ollama-ctx-20260530"></script>
-  <script src="scripts/03-screen-config.js?v=ollama-ctx-20260530"></script>
+  <script src="scripts/01-state-dom.js?v=local-providers-20260530"></script>
+  <script src="scripts/02-boot-ui.js?v=local-providers-20260530"></script>
+  <script src="scripts/03-screen-config.js?v=local-providers-20260530"></script>
   <script src="scripts/04-audio.js?v=audio-stall-recovery-20260528"></script>
-  <script src="scripts/05-live-connection.js?v=ollama-gemini-20260530"></script>
+  <script src="scripts/05-live-connection.js?v=steer-async-20260530"></script>
   <script src="scripts/06-transcript.js?v=release-hardening-20260528"></script>
   <script src="scripts/07-visualizer.js?v=fix-20260521"></script>
-  <script src="scripts/08-memory.js?v=upload-resilience-20260529"></script>
-  <script src="scripts/09-subagents-core.js?v=refine-quiet-20260529"></script>
+  <script src="scripts/08-memory.js?v=steer-not-cancel-20260530"></script>
+  <script src="scripts/09-subagents-core.js?v=concurrent-refine-20260530"></script>
   <script src="scripts/10-scheduler-proactive.js?v=reboot-truth-20260528"></script>
-  <script src="scripts/11-subagents-runner.js?v=ollama-gemini-20260530"></script>
+  <script src="scripts/11-subagents-runner.js?v=concurrent-refine-20260530"></script>
   <script src="scripts/12-subagents-notifications.js?v=cred-prompt-20260529"></script>
   <script src="scripts/13-google-workspace.js?v=upload-resilience-20260529"></script>
 </body>

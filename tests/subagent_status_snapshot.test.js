@@ -109,7 +109,7 @@ describe('direct subagent status questions', () => {
     expect(core).toContain("return 'shadow_active_subagents_v1'");
     expect(bootUi).toContain("typeof recoverOrphanedActiveSubagentSnapshots === 'function'");
     expect(bootUi).toContain('recoverOrphanedActiveSubagentSnapshots();');
-    expect(indexHtml).toContain('09-subagents-core.js?v=refine-quiet-20260529');
+    expect(indexHtml).toContain('09-subagents-core.js?v=concurrent-refine-20260530');
   });
 
   it('recognizes "check on the agent" as a status question', () => {
@@ -196,9 +196,11 @@ describe('direct subagent status questions', () => {
     });
     expect(refinements[0].context.subagent_id).toBe('subagent_1');
     expect(interrupts).toHaveLength(1);
-    expect(interrupts[0].feedback).toBe('Refined correction: use dark mode');
-    expect(interrupts[0].reason).toContain('Selected-model steering refinement applied');
-    expect(notices[0]).toContain('after selected-model steering refinement');
+    // Interrupt happens IMMEDIATELY with the raw correction (no waiting on the refine); the
+    // refinement still runs in the background (refinements has 1) and is queued as a follow-up.
+    expect(interrupts[0].feedback).toBe('use dark mode');
+    expect(interrupts[0].reason).toBe('Direct user correction.');
+    expect(notices[0]).toContain('queued into its preserved context');
   });
 
   it('keeps explicit snapshot injection available for non-speech UI actions', () => {

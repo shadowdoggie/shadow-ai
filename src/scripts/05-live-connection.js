@@ -230,36 +230,22 @@ async function refineSubagentInstructionWithSelectedModel(kind, text, context = 
   if (!rawText) throw new Error('Subagent instruction is empty.');
   if (!smartMainRoutingEnabled || typeof runSubagentPromptRefinement !== 'function') return rawText;
 
-  let refineProvider = typeof getSmartConsultProvider === 'function' ? getSmartConsultProvider() : subagentProvider;
-  let refineModelOverride = null;
-  // Local Ollama is a weak "prompt brain" (and adds a slow cold-load round-trip). If a Gemini
-  // key is available, refine the task with Gemini — a strong brain — and let the local model
-  // EXECUTE it. Without a Gemini key, skip refinement and use the task verbatim.
-  if (refineProvider === 'ollama_local') {
-    const geminiKey = (typeof apiKey === 'string') ? apiKey.trim() : '';
-    if (!geminiKey) {
-      console.log('[Smart] Skipping prompt refinement for local Ollama (no Gemini key); using the task as-is.');
-      return rawText;
-    }
-    refineProvider = 'gemini';
-    refineModelOverride = 'models/gemini-3.1-flash-lite';
-    console.log('[Smart] Refining local-Ollama subagent prompt via Gemini; the local model will execute it.');
-  }
-  const smartModel = refineModelOverride || (typeof getSmartConsultModel === 'function' ? getSmartConsultModel() : (subagentModel || 'gpt-5.5'));
+  // The selected subagent model refines its own prompt — including local models (Ollama,
+  // LM Studio). No dumbing-down or routing through a weaker model.
+  const smartProvider = typeof getSmartConsultProvider === 'function' ? getSmartConsultProvider() : subagentProvider;
+  const smartModel = typeof getSmartConsultModel === 'function' ? getSmartConsultModel() : (subagentModel || 'gpt-5.5');
   console.log('[Smart] Consulting selected subagent model for subagent prompt.', {
     kind,
-    provider: refineProvider,
+    provider: smartProvider,
     model: smartModel,
     chars: rawText.length
   });
-  addSystemMessage(`[Smart] Refining subagent ${kind} with ${refineProvider} / ${smartModel}...`);
+  addSystemMessage(`[Smart] Refining subagent ${kind} with ${smartProvider} / ${smartModel}...`);
   subagentPromptRefinementInProgress = true;
   try {
     const result = await runSubagentPromptRefinement({
       kind,
       text: rawText,
-      providerOverride: refineModelOverride ? refineProvider : undefined,
-      modelOverride: refineModelOverride || undefined,
       ...context
     });
     const refined = String((result && result.text) || '').trim();
@@ -279,16 +265,12 @@ async function refineSubagentInstructionWithSelectedModel(kind, text, context = 
 
 async function startSmartMainBackgroundAgentFromTranscript(prompt, routingReason) {
   const taskSafety = sanitizeSubagentTaskForDelegation(prompt, getRecentUserUtteranceText());
-  let taskForSubagent = taskSafety.task;
-  taskForSubagent = await refineSubagentInstructionWithSelectedModel('spawn', taskForSubagent, {
-    routing_reason: routingReason
-  });
-  taskForSubagent = sanitizeSubagentTaskForDelegation(taskForSubagent, getRecentUserUtteranceText()).task;
-  const normalizedTask = String(taskForSubagent || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const initialTask = taskSafety.task;
+  const normalizedTask = String(initialTask || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   if (!normalizedTask) {
     return { status: 'error', message: 'I need a concrete task before I can start background work.' };
   }
-  if (isGoogleDriveUploadDelegationTask(taskForSubagent)) {
+  if (isGoogleDriveUploadDelegationTask(initialTask)) {
     return { status: 'error', message: 'That should use the direct Google Drive upload tool, not a background subagent.' };
   }
 
@@ -307,39 +289,36 @@ async function startSmartMainBackgroundAgentFromTranscript(prompt, routingReason
   if (taskSafety.changed) {
     addSystemMessage('[Subagent] Delegation task sanitized to avoid passing credentials or forbidden routing hints.');
   }
-  const subagentRecord = createSubagentRecord(taskForSubagent);
+
+  // Register the subagent with the raw task and return to the voice model IMMEDIATELY, so the
+  // voice is NOT stuck "thinking" while the (possibly slow, local) prompt refinement runs.
+  // Refinement AND the actual run happen in the background — the user can keep talking the whole
+  // time. This applies to every provider (the refinement used to block the spawn tool response).
+  const subagentRecord = createSubagentRecord(initialTask);
   activeSubagents.push(subagentRecord);
   updateSubagentIndicator();
 
-  let subModel = subagentModel;
-  if (subagentProvider === 'gemini' && !subModel) {
-    subModel = 'models/gemini-2.5-flash';
-  }
-
-  // For local Ollama, warn (out loud) only if we can RELIABLY tell the model isn't loaded yet,
-  // so the user isn't confused by a slow first step while it loads into VRAM. If we can't
-  // determine it (Ollama unreachable / query failed), stay silent rather than guess.
-  let localModelLoading = false;
-  if (subagentProvider === 'ollama_local' && subModel) {
+  (async () => {
     try {
-      const endpoint = (typeof ollamaLocalEndpoint !== 'undefined' && ollamaLocalEndpoint) ? ollamaLocalEndpoint : 'http://localhost:11434';
-      const psRes = await fetchWithTimeout(`/api/ollama/local/ps?endpoint=${encodeURIComponent(endpoint)}`, {}, 4000);
-      if (psRes && psRes.ok) {
-        const psData = await psRes.json();
-        if (psData && psData.status === 'success' && Array.isArray(psData.models)) {
-          localModelLoading = !psData.models.includes(subModel);
-        }
+      subagentRecord.lastMessage = 'Refining task with the subagent model...';
+      if (typeof refreshSubagentProgressState === 'function') refreshSubagentProgressState(subagentRecord);
+      let taskForSubagent = await refineSubagentInstructionWithSelectedModel('spawn', initialTask, { routing_reason: routingReason });
+      taskForSubagent = sanitizeSubagentTaskForDelegation(taskForSubagent, getRecentUserUtteranceText()).task;
+      if (!String(taskForSubagent || '').trim()) taskForSubagent = initialTask;
+      subagentRecord.task = taskForSubagent;
+      let subModel = subagentModel;
+      if (subagentProvider === 'gemini' && !subModel) {
+        subModel = 'models/gemini-2.5-flash';
       }
-    } catch (_) { /* can't tell reliably -> stay silent */ }
-  }
+      await runRestSubagent(taskForSubagent, subModel, subagentRecord);
+    } catch (err) {
+      if (isSubagentCancelled(subagentRecord)) return;
+      failSubagentRecord(subagentRecord, `Startup failed: ${err.message}`);
+      notifyVoiceSessionOfFailure(subagentRecord.task || initialTask, err.message, subagentRecord.id);
+    }
+  })();
 
-  runRestSubagent(taskForSubagent, subModel, subagentRecord).catch(err => {
-    if (isSubagentCancelled(subagentRecord)) return;
-    failSubagentRecord(subagentRecord, `Startup failed: ${err.message}`);
-    notifyVoiceSessionOfFailure(taskForSubagent, err.message, subagentRecord.id);
-  });
-
-  return { status: 'spawned', subagent_id: subagentRecord.id, message: 'I started working on it in the background.', model_loading: localModelLoading };
+  return { status: 'spawned', subagent_id: subagentRecord.id, message: 'I started working on it in the background.' };
 }
 
 async function sendLiveToolOutputFromOperation(targetSocket, attemptId, callId, operation, toolName = '') {
@@ -1971,33 +1950,32 @@ async function connect() {
                 sendLiveToolResponse(currentSocket, thisConnectionAttemptId, call.id, { status: 'success', subagent_id: subagent.id, message: `Authentication checkpoint resumed for subagent ${subagent.id}.` });
                 continue;
               }
-              try {
-                const steerResult = typeof interruptSubagentWithSelectedModelFeedback === 'function'
-                  ? await interruptSubagentWithSelectedModelFeedback(
-                    subagent,
-                    feedback,
-                    'Tool correction received.',
-                    'Voice requested steer_subagent; refine the steering instruction through the selected subagent model before injecting it.'
-                  )
-                  : { interrupted: interruptSubagentWithFeedback(subagent, feedback, 'Tool correction received.'), refinedBySubagentModel: false };
-                const interrupted = Boolean(steerResult && steerResult.interrupted);
-                sendLiveToolResponse(currentSocket, thisConnectionAttemptId, call.id, {
-                  status: interrupted ? 'interrupted' : 'error',
-                  subagent_id: subagent.id,
-                  requested_subagent_id: requestedSubagentId || undefined,
-                  refined_by_subagent_model: Boolean(steerResult && steerResult.refinedBySubagentModel),
-                  refinement_attempted: Boolean(steerResult && steerResult.refinementAttempted),
-                  message: interrupted
-                    ? `Subagent ${subagent.id} was interrupted. The correction was queued into its preserved context.`
-                    : `Subagent ${subagent.id} could not be interrupted.`
-                });
-              } catch (err) {
-                sendLiveToolResponse(currentSocket, thisConnectionAttemptId, call.id, {
-                  status: 'error',
-                  error: `Subagent steering failed: ${err && err.message ? err.message : String(err)}`
-                });
-                markToolResponseFollowupPending('steer_subagent refinement failed');
+              // Apply the correction IMMEDIATELY with the raw feedback so the subagent stops now
+              // and the voice tool response returns instantly (no waiting on a slow refine — same
+              // fix as spawn). Then refine in the background and queue the refined version as a
+              // follow-up clarification. Works for every provider.
+              const interrupted = interruptSubagentWithFeedback(subagent, feedback, 'Tool correction received.');
+              if (typeof isSubagentPromptBrainSteeringEnabled === 'function' && isSubagentPromptBrainSteeringEnabled()
+                  && typeof refineSubagentSteeringFeedbackWithSelectedModel === 'function') {
+                Promise.resolve(refineSubagentSteeringFeedbackWithSelectedModel(
+                  subagent,
+                  feedback,
+                  'Voice requested steer_subagent; refine the correction through the selected subagent model.'
+                )).then(res => {
+                  const refined = res && res.refinedBySubagentModel ? String(res.feedback || '').trim() : '';
+                  if (refined && refined !== String(feedback || '').trim() && !isSubagentCancelled(subagent) && Array.isArray(subagent.steerQueue)) {
+                    subagent.steerQueue.push(`[Refined clarification of the previous correction] ${refined}`);
+                  }
+                }).catch(() => { /* best-effort; the raw correction was already applied */ });
               }
+              sendLiveToolResponse(currentSocket, thisConnectionAttemptId, call.id, {
+                status: interrupted ? 'interrupted' : 'error',
+                subagent_id: subagent.id,
+                requested_subagent_id: requestedSubagentId || undefined,
+                message: interrupted
+                  ? `Subagent ${subagent.id} was interrupted and your correction was applied. Keep talking; any refinement happens in the background.`
+                  : `Subagent ${subagent.id} could not be interrupted.`
+              });
             } else {
               sendLiveToolResponse(currentSocket, thisConnectionAttemptId, call.id, { status: 'error', error: requestedSubagentId ? `Subagent ${requestedSubagentId} not found.` : 'No running subagent found to steer.' });
             }

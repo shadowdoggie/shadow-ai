@@ -352,6 +352,21 @@ async function loadConfigFromServer() {
       localStorage.setItem('shadow_ollama_local_num_ctx', String(ollamaLocalNumCtx));
       if (inputOllamaLocalNumCtx) inputOllamaLocalNumCtx.value = ollamaLocalNumCtx;
     }
+    if (config.shadow_lmstudio_endpoint) {
+      lmstudioEndpoint = config.shadow_lmstudio_endpoint;
+      localStorage.setItem('shadow_lmstudio_endpoint', lmstudioEndpoint);
+      if (inputLmstudioEndpoint) inputLmstudioEndpoint.value = lmstudioEndpoint;
+    }
+    if (config.shadow_custom_endpoint !== undefined) {
+      customEndpoint = config.shadow_custom_endpoint || '';
+      localStorage.setItem('shadow_custom_endpoint', customEndpoint);
+      if (inputCustomEndpoint) inputCustomEndpoint.value = customEndpoint;
+    }
+    if (config.shadow_custom_api_key !== undefined) {
+      customApiKey = config.shadow_custom_api_key || '';
+      localStorage.setItem('shadow_custom_api_key', customApiKey);
+      if (inputCustomApiKey) inputCustomApiKey.value = customApiKey;
+    }
     if (config.shadow_searxng_url !== undefined) {
       searxngSearchUrl = config.shadow_searxng_url || 'http://127.0.0.1/search';
       localStorage.setItem('shadow_searxng_url', searxngSearchUrl);
@@ -785,7 +800,7 @@ async function applyShadowSettingsUpdate(args = {}) {
 
   const nextProvider = valueOrCurrent(requestedArgs.subagent_provider, subagentProvider).toLowerCase();
   if (nextProvider !== subagentProvider) {
-    if (['gemini', OPENAI_CODEX_PROVIDER, 'minimax', 'moonshot', 'ollama', 'ollama_local'].includes(nextProvider)) {
+    if (['gemini', OPENAI_CODEX_PROVIDER, 'minimax', 'moonshot', 'ollama', 'ollama_local', 'lmstudio_local', 'custom_openai'].includes(nextProvider)) {
       subagentProvider = nextProvider;
       localStorage.setItem('shadow_subagent_provider', subagentProvider);
       if (selectSubagentProvider) {
@@ -808,6 +823,8 @@ async function applyShadowSettingsUpdate(args = {}) {
     else if (subagentProvider === 'moonshot' && selectSubagentModelMoonshot) selectSubagentModelMoonshot.value = subagentModel;
     else if (subagentProvider === 'ollama' && selectSubagentModelOllama) selectSubagentModelOllama.value = subagentModel;
     else if (subagentProvider === 'ollama_local' && selectSubagentModelOllamaLocal) selectSubagentModelOllamaLocal.value = subagentModel;
+    else if (subagentProvider === 'lmstudio_local' && selectSubagentModelLmstudioLocal) selectSubagentModelLmstudioLocal.value = subagentModel;
+    else if (subagentProvider === 'custom_openai' && inputCustomModel) inputCustomModel.value = subagentModel;
     changed.push('subagent model');
   }
 

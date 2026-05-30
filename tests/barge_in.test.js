@@ -651,7 +651,10 @@ describe('Subagent Correction Interrupts', () => {
 
     expect(liveConnection).toContain('preserves its conversation context');
     expect(liveConnection).toContain('resolveControllableSubagentReference(requestedSubagentId)');
-    expect(liveConnection).toContain('interruptSubagentWithSelectedModelFeedback(');
+    // Steering interrupts immediately with the raw correction (no blocking on a slow refine),
+    // then refines in the background — so the voice is not stuck while a local model refines.
+    expect(liveConnection).toContain("interruptSubagentWithFeedback(subagent, feedback, 'Tool correction received.')");
+    expect(liveConnection).toContain('refineSubagentSteeringFeedbackWithSelectedModel(');
     expect(core).toContain('function interruptSubagentWithFeedback');
     expect(core).toContain('function interruptSubagentWithSelectedModelFeedback');
     expect(core).toContain('refineSubagentInstructionWithSelectedModel(\'steer\'');

@@ -54,13 +54,13 @@ const LEGACY_LIVE_MODEL_ALIASES = {
   'models/gemini-2.5-flash-native-audio-latest': DEFAULT_LIVE_MODEL,
   'models/gemini-2.5-flash-native-audio-preview-09-2025': FALLBACK_LIVE_MODEL
 };
-const DEFAULT_LIVE_THINKING_LEVEL = 'low';
-const LIVE_THINKING_DEFAULT_MIGRATION_KEY = 'shadow_live_thinking_default_migrated_low_20260530';
+const DEFAULT_LIVE_THINKING_LEVEL = 'medium';
+const LIVE_THINKING_DEFAULT_MIGRATION_KEY = 'shadow_live_thinking_default_migrated_medium_20260530';
 const LIVE_THINKING_LEVELS = new Set(['auto', 'minimal', 'low', 'medium', 'high']);
-// Previous hardcoded defaults ('high' originally, then 'medium'). On a one-time
-// migration we slide anyone still sitting on an old default down to the new 'low'
-// default; deliberate 'minimal'/'low' choices are left untouched.
-const LIVE_THINKING_LEGACY_DEFAULTS = new Set(['high', 'medium']);
+// Previous hardcoded defaults ('high' originally, then briefly 'low'). On a one-time
+// migration we move anyone still sitting on an old default to the current 'medium'
+// default; deliberate 'minimal' choices are left untouched.
+const LIVE_THINKING_LEGACY_DEFAULTS = new Set(['high', 'low']);
 
 function normalizeLiveModel(model) {
   const requestedModel = String(model || '').trim();
@@ -171,6 +171,9 @@ let minimaxApiKey = localStorage.getItem('shadow_minimax_key') || '';
 let moonshotApiKey = localStorage.getItem('shadow_moonshot_key') || '';
 let ollamaLocalEndpoint = localStorage.getItem('shadow_ollama_local_endpoint') || 'http://localhost:11434';
 let ollamaLocalNumCtx = parseInt(localStorage.getItem('shadow_ollama_local_num_ctx') || '8192', 10) || 8192;
+let lmstudioEndpoint = localStorage.getItem('shadow_lmstudio_endpoint') || 'http://localhost:1234/v1';
+let customEndpoint = localStorage.getItem('shadow_custom_endpoint') || '';
+let customApiKey = localStorage.getItem('shadow_custom_api_key') || '';
 
 let ollamaApiKey = localStorage.getItem('shadow_ollama_key') || '';
 let searxngSearchUrl = localStorage.getItem('shadow_searxng_url') || 'http://127.0.0.1/search';
@@ -792,6 +795,7 @@ const selectSubagentModelMinimax = document.getElementById('select-subagent-mode
 const selectSubagentModelMoonshot = document.getElementById('select-subagent-model-moonshot');
 const selectSubagentModelOllama = document.getElementById('select-subagent-model-ollama');
 const selectSubagentModelOllamaLocal = document.getElementById('select-subagent-model-ollama-local');
+const selectSubagentModelLmstudioLocal = document.getElementById('select-subagent-model-lmstudio-local');
 const selectSubagentReasoningMode = document.getElementById('select-subagent-reasoning-mode');
 const groupSubagentReasoningMode = document.getElementById('group-subagent-reasoning-mode');
 const groupOpenaiCodexAuth = document.getElementById('group-openai-codex-auth');
@@ -813,6 +817,16 @@ const inputOllamaLocalEndpoint = document.getElementById('input-ollama-local-end
 const inputOllamaLocalNumCtx = document.getElementById('input-ollama-local-num-ctx');
 const btnRefreshOllamaLocalModels = document.getElementById('btn-refresh-ollama-local-models');
 const ollamaLocalStatus = document.getElementById('ollama-local-status');
+const groupLmstudioLocalSettings = document.getElementById('group-lmstudio-local-settings');
+const inputLmstudioEndpoint = document.getElementById('input-lmstudio-endpoint');
+const btnRefreshLmstudioModels = document.getElementById('btn-refresh-lmstudio-models');
+const lmstudioStatus = document.getElementById('lmstudio-status');
+const groupCustomSettings = document.getElementById('group-custom-settings');
+const inputCustomEndpoint = document.getElementById('input-custom-endpoint');
+const inputCustomApiKey = document.getElementById('input-custom-api-key');
+const inputCustomModel = document.getElementById('input-custom-model');
+const btnRefreshCustomModels = document.getElementById('btn-refresh-custom-models');
+const customStatus = document.getElementById('custom-status');
 const inputMemoryBackupEnabled = document.getElementById('input-memory-backup-enabled');
 const selectMemoryBackupInterval = document.getElementById('select-memory-backup-interval');
 const inputMemoryBackupCustomMinutes = document.getElementById('input-memory-backup-custom-minutes');

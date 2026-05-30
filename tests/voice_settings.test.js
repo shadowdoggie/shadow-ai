@@ -273,7 +273,7 @@ describe('voice setting session behavior', () => {
     expect(liveThinkingLevel).toBe('minimal');
     expect(getStoredThinkingLevel()).toBe('minimal');
     expect(normalizeLiveThinkingLevel('LOW')).toBe('low');
-    expect(normalizeLiveThinkingLevel('bad')).toBe('low');
+    expect(normalizeLiveThinkingLevel('bad')).toBe('medium');
     expect(supportsLiveThinkingLevel(DEFAULT_LIVE_MODEL)).toBe(true);
     expect(supportsLiveThinkingLevel(FALLBACK_LIVE_MODEL)).toBe(false);
     expect(getLiveGenerationThinkingConfig(DEFAULT_LIVE_MODEL, 'high')).toEqual({ thinkingLevel: 'high' });
@@ -281,14 +281,14 @@ describe('voice setting session behavior', () => {
     expect(getLiveGenerationThinkingConfig(FALLBACK_LIVE_MODEL, 'high')).toBe(null);
   });
 
-  it('migrates previous default voice reasoning levels (high/medium) down to the low default', () => {
+  it('migrates previous default voice reasoning levels (high/low) to the medium default', () => {
     const fromHigh = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'high');
-    expect(fromHigh.liveThinkingLevel).toBe('low');
-    expect(fromHigh.getStoredThinkingLevel()).toBe('low');
+    expect(fromHigh.liveThinkingLevel).toBe('medium');
+    expect(fromHigh.getStoredThinkingLevel()).toBe('medium');
 
-    const fromMedium = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'medium');
-    expect(fromMedium.liveThinkingLevel).toBe('low');
-    expect(fromMedium.getStoredThinkingLevel()).toBe('low');
+    const fromLow = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'low');
+    expect(fromLow.liveThinkingLevel).toBe('medium');
+    expect(fromLow.getStoredThinkingLevel()).toBe('medium');
   });
 
   it('routes executable work away from foreground smart consults', () => {
@@ -407,8 +407,8 @@ describe('voice setting session behavior', () => {
     expect(indexHtml).toContain('input-assistant-name');
     expect(indexHtml).toContain('Subagent Prompt Brain');
     expect(indexHtml).toContain('Refine subagent prompts and steering with the selected subagent model');
-    expect(indexHtml).toContain('01-state-dom.js?v=ollama-ctx-20260530');
-    expect(indexHtml).toContain('11-subagents-runner.js?v=ollama-gemini-20260530');
+    expect(indexHtml).toContain('01-state-dom.js?v=local-providers-20260530');
+    expect(indexHtml).toContain('11-subagents-runner.js?v=concurrent-refine-20260530');
   });
 
   it('offers a local Ollama subagent provider with an auto-detected model picker', () => {
@@ -451,17 +451,28 @@ describe('voice setting session behavior', () => {
     expect(runPs1).toContain('/api/ollama/local/models');
     expect(runPs1).toContain('/api/tags');
 
-    // Gemini-refines / Ollama-executes: refinement can override provider/model.
-    expect(runner).toContain('args.providerOverride');
-    expect(runner).toContain('args.modelOverride');
-    const liveConnection = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '05-live-connection.js'), 'utf8');
-    expect(liveConnection).toContain("refineProvider = 'gemini'");
-    expect(liveConnection).toContain('modelOverride');
-
     // "Model is loading" heads-up uses Ollama /api/ps, only when reliably detected.
+    const liveConnection = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '05-live-connection.js'), 'utf8');
     expect(runPs1).toContain('/api/ollama/local/ps');
     expect(runPs1).toContain('/api/ps');
     expect(liveConnection).toContain('model_loading');
+
+    // Local Ollama model calls are serialized (single GPU can't run subagents concurrently).
+    expect(runner).toContain('runExclusiveOllamaLocal');
+    expect(runner).toContain('ollamaLocalRequestChain');
+
+    // LM Studio + custom OpenAI-compatible providers (concurrent; LM Studio handles parallelism).
+    expect(indexHtml).toContain('<option value="lmstudio_local">LM Studio (Local)</option>');
+    expect(indexHtml).toContain('<option value="custom_openai">Custom (OpenAI-compatible)</option>');
+    expect(indexHtml).toContain('input-lmstudio-endpoint');
+    expect(indexHtml).toContain('input-custom-endpoint');
+    expect(indexHtml).toContain('input-custom-model');
+    expect(runner).toContain("subagentProvider === 'lmstudio_local'");
+    expect(runner).toContain("subagentProvider === 'custom_openai'");
+    expect(runner).toContain('getLmstudioBase()');
+    expect(runner).toContain('getCustomOpenAiBase()');
+    expect(runPs1).toContain('/api/lmstudio/models');
+    expect(runPs1).toContain('/api/openai-compat/models');
   });
 
   it('wires Subagent Prompt Brain refinement through settings and the selected subagent model', () => {
@@ -973,10 +984,10 @@ describe('voice setting session behavior', () => {
     expect(screenConfig).not.toContain('hey shadow');
     expect(bootUi).not.toContain('startWakeWordListener();');
     expect(liveConnection).not.toContain('startWakeWordListener();');
-    expect(indexHtml).toContain('02-boot-ui.js?v=ollama-ctx-20260530');
-    expect(indexHtml).toContain('03-screen-config.js?v=ollama-ctx-20260530');
-    expect(indexHtml).toContain('05-live-connection.js?v=ollama-gemini-20260530');
-    expect(indexHtml).toContain('08-memory.js?v=upload-resilience-20260529');
+    expect(indexHtml).toContain('02-boot-ui.js?v=local-providers-20260530');
+    expect(indexHtml).toContain('03-screen-config.js?v=local-providers-20260530');
+    expect(indexHtml).toContain('05-live-connection.js?v=steer-async-20260530');
+    expect(indexHtml).toContain('08-memory.js?v=steer-not-cancel-20260530');
     expect(indexHtml).toContain('10-scheduler-proactive.js?v=reboot-truth-20260528');
   });
 
