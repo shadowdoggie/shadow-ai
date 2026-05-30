@@ -54,7 +54,7 @@ on your machine**. Gmail/Calendar/Drive/Contacts are optional via an in-app setu
 > ```
 >
 > v1.0.0 `ShadowAI-Setup.exe`:
-> `f2f318301cdb77539eca82c23d0e890394e4d7054bc792aa11a691af729383e9`
+> `67d69af21c3a7f345bd770b7ad1b667de9771d26fc087d13cd9c12f5c34073ee`
 
 See **[SETUP.md](SETUP.md)** for full install, developer, and build-from-source steps.
 
