@@ -62,10 +62,10 @@ See **[SETUP.md](SETUP.md)** for full install, developer, and build-from-source 
 
 No promises or timelines, but here's where my head's at right now:
 
-- **Local LLM for subagents — ✅ shipped (v1.1.0).** Background subagents can now run on a
-  **local Ollama** instance on your own machine (no API key, fully offline). The model list
-  is auto-detected from your running Ollama — just install it, pull a model, and pick it in
-  Settings.
+- **Local LLM for subagents — ✅ shipped (v1.3.0).** Background subagents can run on a
+  **local Ollama** instance on your own machine. The model list is auto-detected from your
+  running Ollama — just install it, pull a model, and pick it in Settings — with a
+  configurable context size (`num_ctx`).
 - **Custom (OpenAI-compatible) endpoint — current priority.** Next up: point subagents at
   any OpenAI-compatible endpoint (your own inference server, LM Studio, vLLM, etc.).
 - **Local voice model — in progress.** Bringing local models to the realtime voice path too,
