@@ -53,8 +53,8 @@ on your machine**. Gmail/Calendar/Drive/Contacts are optional via an in-app setu
 > Get-FileHash .\ShadowAI-Setup.exe -Algorithm SHA256
 > ```
 >
-> v1.4.0 `ShadowAI-Setup.exe`:
-> `6123aa6ed8983bc60c4759a0a9b89fe3fc64402c4df23113c7f52220d7f4b606`
+> v1.5.0 `ShadowAI-Setup.exe`:
+> `cb0f701dc3afd8e1c280bfcc1cc726dc55cd0a765c2c2d9ce7410f0fd1871caf`
 
 See **[SETUP.md](SETUP.md)** for full install, developer, and build-from-source steps.
 
@@ -62,14 +62,17 @@ See **[SETUP.md](SETUP.md)** for full install, developer, and build-from-source 
 
 No promises or timelines, but here's where my head's at right now:
 
-- **Local LLM for subagents — ✅ shipped (v1.4.0).** Run background subagents on a **local
-  Ollama**, **LM Studio**, or **any custom OpenAI-compatible endpoint** (llama.cpp, vLLM, your
-  own gateway, etc.). Each auto-detects the available models from the endpoint — just pick one
-  in Settings. Ollama also exposes a configurable context size (`num_ctx`).
-- **Local voice model — in progress.** Bringing local models to the realtime voice path too,
-  not just subagents.
-- **Local TTS — eventually.** Looking at **Qwen3-TTS** as a possible fully-local
-  text-to-speech option down the line.
+- **Local LLM for subagents — ✅ shipped.** Run background subagents on **LM Studio** or **any
+  custom OpenAI-compatible endpoint** (llama.cpp, vLLM, your own gateway, etc.), each
+  auto-detecting models from the endpoint — just pick one in Settings.
+  > Local **Ollama** was removed in v1.5.0: on consumer GPUs it offloads large models to CPU and
+  > runs unusably slowly (idling the GPU at ~20 W), which Shadow can't control from its side —
+  > the same models run well via LM Studio. **Ollama Cloud** stays.
+- **Built-in llama.cpp — next.** A bundled local model server with a download / model-manager UI
+  (auto-listing available models), usable as a subagent provider and — later — the local voice brain.
+- **Local voice model — planned.** A fully local realtime path (Parakeet STT → local LLM brain →
+  Qwen3 TTS) as an optional alternative to Gemini Live.
+- **Local TTS — eventually.** **Qwen3-TTS** as the fully-local text-to-speech option.
 
 ## Contributing
 
