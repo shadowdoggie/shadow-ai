@@ -408,7 +408,7 @@ describe('voice setting session behavior', () => {
     expect(indexHtml).toContain('Subagent Prompt Brain');
     expect(indexHtml).toContain('Refine subagent prompts and steering with the selected subagent model');
     expect(indexHtml).toContain('01-state-dom.js?v=ollama-ctx-20260530');
-    expect(indexHtml).toContain('11-subagents-runner.js?v=ollama-fallback-20260530');
+    expect(indexHtml).toContain('11-subagents-runner.js?v=ollama-gemini-20260530');
   });
 
   it('offers a local Ollama subagent provider with an auto-detected model picker', () => {
@@ -450,6 +450,18 @@ describe('voice setting session behavior', () => {
     // Backend: server-side model-list endpoint, restricted to loopback.
     expect(runPs1).toContain('/api/ollama/local/models');
     expect(runPs1).toContain('/api/tags');
+
+    // Gemini-refines / Ollama-executes: refinement can override provider/model.
+    expect(runner).toContain('args.providerOverride');
+    expect(runner).toContain('args.modelOverride');
+    const liveConnection = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '05-live-connection.js'), 'utf8');
+    expect(liveConnection).toContain("refineProvider = 'gemini'");
+    expect(liveConnection).toContain('modelOverride');
+
+    // "Model is loading" heads-up uses Ollama /api/ps, only when reliably detected.
+    expect(runPs1).toContain('/api/ollama/local/ps');
+    expect(runPs1).toContain('/api/ps');
+    expect(liveConnection).toContain('model_loading');
   });
 
   it('wires Subagent Prompt Brain refinement through settings and the selected subagent model', () => {
@@ -963,7 +975,7 @@ describe('voice setting session behavior', () => {
     expect(liveConnection).not.toContain('startWakeWordListener();');
     expect(indexHtml).toContain('02-boot-ui.js?v=ollama-ctx-20260530');
     expect(indexHtml).toContain('03-screen-config.js?v=ollama-ctx-20260530');
-    expect(indexHtml).toContain('05-live-connection.js?v=upload-resilience-20260529');
+    expect(indexHtml).toContain('05-live-connection.js?v=ollama-gemini-20260530');
     expect(indexHtml).toContain('08-memory.js?v=upload-resilience-20260529');
     expect(indexHtml).toContain('10-scheduler-proactive.js?v=reboot-truth-20260528');
   });

@@ -2764,6 +2764,47 @@ try {
                 continue
             }
 
+            # List models currently LOADED in a local Ollama (via /api/ps) so the UI can warn
+            # that a cold model may take a moment to load on the first request.
+            if ($urlPath -eq "/api/ollama/local/ps") {
+                if ($request.HttpMethod -eq "OPTIONS") {
+                    Add-ShadowCorsOrigin $response
+                    $response.Headers.Add("Access-Control-Allow-Methods", "GET, OPTIONS")
+                    $response.Headers.Add("Access-Control-Allow-Headers", "Content-Type")
+                    $response.StatusCode = 200
+                    $response.Close()
+                    continue
+                }
+                if ($request.HttpMethod -eq "GET") {
+                    $ollamaEndpoint = $request.QueryString["endpoint"]
+                    if ([string]::IsNullOrWhiteSpace($ollamaEndpoint)) { $ollamaEndpoint = "http://localhost:11434" }
+                    $ollamaEndpoint = $ollamaEndpoint.TrimEnd('/')
+                    $loopbackOk = $false
+                    try {
+                        $parsedEndpoint = [System.Uri]$ollamaEndpoint
+                        if ($parsedEndpoint.Scheme -eq 'http' -and @('localhost','127.0.0.1','::1') -contains $parsedEndpoint.Host) { $loopbackOk = $true }
+                    } catch {}
+                    if (-not $loopbackOk) {
+                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; models = @(); error = "Only local (loopback) Ollama endpoints are allowed." }) 400
+                        continue
+                    }
+                    try {
+                        $ollamaPs = Invoke-RestMethod -Uri "$ollamaEndpoint/api/ps" -Method GET -TimeoutSec 4
+                        $loadedModels = @()
+                        if ($ollamaPs -and $ollamaPs.models) {
+                            $loadedModels = @($ollamaPs.models | ForEach-Object { $_.name } | Where-Object { $_ })
+                        }
+                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; endpoint = $ollamaEndpoint; models = $loadedModels }) 200
+                    } catch {
+                        # Can't determine loaded state — return error so the caller stays silent rather than guessing.
+                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; endpoint = $ollamaEndpoint; models = @(); error = "Could not query Ollama loaded-model state." }) 502
+                    }
+                    continue
+                }
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405
+                continue
+            }
+
             # Proxy endpoint for third-party AI API calls (bypasses CORS)
             if ($urlPath -eq "/api/proxy") {
                 if ($request.HttpMethod -eq "OPTIONS") {

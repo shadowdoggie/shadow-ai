@@ -230,20 +230,36 @@ async function refineSubagentInstructionWithSelectedModel(kind, text, context = 
   if (!rawText) throw new Error('Subagent instruction is empty.');
   if (!smartMainRoutingEnabled || typeof runSubagentPromptRefinement !== 'function') return rawText;
 
-  const smartProvider = typeof getSmartConsultProvider === 'function' ? getSmartConsultProvider() : subagentProvider;
-  const smartModel = typeof getSmartConsultModel === 'function' ? getSmartConsultModel() : (subagentModel || 'gpt-5.5');
+  let refineProvider = typeof getSmartConsultProvider === 'function' ? getSmartConsultProvider() : subagentProvider;
+  let refineModelOverride = null;
+  // Local Ollama is a weak "prompt brain" (and adds a slow cold-load round-trip). If a Gemini
+  // key is available, refine the task with Gemini — a strong brain — and let the local model
+  // EXECUTE it. Without a Gemini key, skip refinement and use the task verbatim.
+  if (refineProvider === 'ollama_local') {
+    const geminiKey = (typeof apiKey === 'string') ? apiKey.trim() : '';
+    if (!geminiKey) {
+      console.log('[Smart] Skipping prompt refinement for local Ollama (no Gemini key); using the task as-is.');
+      return rawText;
+    }
+    refineProvider = 'gemini';
+    refineModelOverride = 'models/gemini-3.1-flash-lite';
+    console.log('[Smart] Refining local-Ollama subagent prompt via Gemini; the local model will execute it.');
+  }
+  const smartModel = refineModelOverride || (typeof getSmartConsultModel === 'function' ? getSmartConsultModel() : (subagentModel || 'gpt-5.5'));
   console.log('[Smart] Consulting selected subagent model for subagent prompt.', {
     kind,
-    provider: smartProvider,
+    provider: refineProvider,
     model: smartModel,
     chars: rawText.length
   });
-  addSystemMessage(`[Smart] Refining subagent ${kind} with ${smartProvider} / ${smartModel}...`);
+  addSystemMessage(`[Smart] Refining subagent ${kind} with ${refineProvider} / ${smartModel}...`);
   subagentPromptRefinementInProgress = true;
   try {
     const result = await runSubagentPromptRefinement({
       kind,
       text: rawText,
+      providerOverride: refineModelOverride ? refineProvider : undefined,
+      modelOverride: refineModelOverride || undefined,
       ...context
     });
     const refined = String((result && result.text) || '').trim();
@@ -299,13 +315,31 @@ async function startSmartMainBackgroundAgentFromTranscript(prompt, routingReason
   if (subagentProvider === 'gemini' && !subModel) {
     subModel = 'models/gemini-2.5-flash';
   }
+
+  // For local Ollama, warn (out loud) only if we can RELIABLY tell the model isn't loaded yet,
+  // so the user isn't confused by a slow first step while it loads into VRAM. If we can't
+  // determine it (Ollama unreachable / query failed), stay silent rather than guess.
+  let localModelLoading = false;
+  if (subagentProvider === 'ollama_local' && subModel) {
+    try {
+      const endpoint = (typeof ollamaLocalEndpoint !== 'undefined' && ollamaLocalEndpoint) ? ollamaLocalEndpoint : 'http://localhost:11434';
+      const psRes = await fetchWithTimeout(`/api/ollama/local/ps?endpoint=${encodeURIComponent(endpoint)}`, {}, 4000);
+      if (psRes && psRes.ok) {
+        const psData = await psRes.json();
+        if (psData && psData.status === 'success' && Array.isArray(psData.models)) {
+          localModelLoading = !psData.models.includes(subModel);
+        }
+      }
+    } catch (_) { /* can't tell reliably -> stay silent */ }
+  }
+
   runRestSubagent(taskForSubagent, subModel, subagentRecord).catch(err => {
     if (isSubagentCancelled(subagentRecord)) return;
     failSubagentRecord(subagentRecord, `Startup failed: ${err.message}`);
     notifyVoiceSessionOfFailure(taskForSubagent, err.message, subagentRecord.id);
   });
 
-  return { status: 'spawned', subagent_id: subagentRecord.id, message: 'I started working on it in the background.' };
+  return { status: 'spawned', subagent_id: subagentRecord.id, message: 'I started working on it in the background.', model_loading: localModelLoading };
 }
 
 async function sendLiveToolOutputFromOperation(targetSocket, attemptId, callId, operation, toolName = '') {
@@ -1871,7 +1905,9 @@ async function connect() {
             sendLiveToolResponse(currentSocket, thisConnectionAttemptId, call.id, {
                 status: routed.status || 'spawned',
                 subagent_id: routed.subagent_id,
-              message: 'Background work started. Say this in first person: "I started working on it in the background." Do not repeat the internal task prompt or quote the delegated instructions.',
+              message: routed.model_loading
+                ? 'Background work started, but the local AI model still has to load into memory first, which can take a little bit. Say this naturally in first person: that you started on it in the background and the local model is just warming up, so the first step may take a moment. Do not repeat the internal task prompt or quote the delegated instructions.'
+                : 'Background work started. Say this in first person: "I started working on it in the background." Do not repeat the internal task prompt or quote the delegated instructions.',
                 refined_by_subagent_model: smartMainRoutingEnabled
             });
             markToolResponseFollowupPending('spawn_background_agent');

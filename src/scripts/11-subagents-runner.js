@@ -414,9 +414,11 @@ function createChatCompletionsMessages(history, subagentSystemInstruction) {
       }
 
       if (toolCalls.length > 0) {
-        openAiMessages.push({ role: 'assistant', content: text || null, tool_calls: toolCalls });
+        // Use '' not null for empty content: Ollama (native + OpenAI-compat) rejects null
+        // content ("invalid message content type: <nil>"); '' is valid for all providers.
+        openAiMessages.push({ role: 'assistant', content: text || '', tool_calls: toolCalls });
       } else {
-        openAiMessages.push({ role: 'assistant', content: text || null });
+        openAiMessages.push({ role: 'assistant', content: text || '' });
       }
       continue;
     }
@@ -1024,8 +1026,10 @@ async function runSubagentPromptRefinement(args = {}) {
   if (!text) throw new Error('Subagent prompt refinement text is empty.');
 
   cancelActiveSmartConsult('superseded by subagent prompt refinement');
-  const targetModel = getSmartConsultModel();
-  const provider = getSmartConsultProvider();
+  // Allow the caller to override provider/model (e.g. refine a local-Ollama subagent's prompt
+  // with Gemini — a strong "brain" — while the local model does the actual execution).
+  const targetModel = args.modelOverride || getSmartConsultModel();
+  const provider = args.providerOverride || getSmartConsultProvider();
   const codexProvider = typeof OPENAI_CODEX_PROVIDER === 'undefined' ? 'openai_codex' : OPENAI_CODEX_PROVIDER;
   const requestId = `refine_${++smartConsultSequence}_${Date.now()}`;
   const refineRecord = {
@@ -1748,6 +1752,11 @@ When finished, you MUST call finish_task with status="success" only if the reque
   const loopWarningThreshold = typeof SUBAGENT_LOOP_WARNING_THRESHOLD === 'number' ? SUBAGENT_LOOP_WARNING_THRESHOLD : 300;
   let loopWarningSent = false;
   let codexPlainTextRepairCount = 0;
+  // Local Ollama: try native /api/chat first (honors num_ctx); if it fails once, stay on the
+  // OpenAI-compatible endpoint for the REST of this subagent. Native rejects multi-turn tool
+  // history (OpenAI-style string tool-call args), so without persisting this we'd re-fail and
+  // 400 every single step. The model stays warm at the num_ctx it first loaded with.
+  let ollamaLocalUseNative = true;
 
   while (loopCount < maxLoops) {
     loopCount++;
@@ -1807,10 +1816,6 @@ When finished, you MUST call finish_task with status="success" only if the reque
 
       let response;
       let retries = 0;
-      // Local Ollama: try the native /api/chat first (only endpoint that honors num_ctx),
-      // but fall back to the OpenAI-compatible endpoint if native rejects/fails the request
-      // so a subagent always runs even if a model/version is picky about the native API.
-      let ollamaLocalUseNative = true;
       while (true) {
         let isGemini = subagentProvider === 'gemini';
         let endpointUrl = '';
