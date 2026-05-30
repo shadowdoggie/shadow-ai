@@ -44,3 +44,6 @@ client_secret.json
 client_secret_*.json
 *secret*.json
 *credentials*.json
+
+# Internal dev/planning docs - keep local, not in the public repo
+docs/
