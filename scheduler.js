@@ -8,8 +8,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const PORT = 9333;
-const TASKS_FILE = path.join(__dirname, 'scheduled_tasks.json');
+const PORT = Number(process.env.SHADOW_SCHEDULER_PORT) || 9333;
+const TASKS_FILE = process.env.SHADOW_SCHEDULER_TASKS_FILE || path.join(__dirname, 'scheduled_tasks.json');
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 const MAX_TIMER_DELAY_MS = 2_147_000_000; // Keep below Node's signed 32-bit timer ceiling.
 
@@ -364,14 +364,24 @@ function scheduleTask(task) {
 }
 
 async function executeTask(task) {
-  console.log(`[Scheduler] Executing task ${task.id} (${task.type}): ${task.message}`);
-  
-  // Check if task was cancelled before we started
-  if (task.status === 'cancelled') {
-    console.log(`[Scheduler] Task ${task.id} was cancelled, skipping execution`);
+  // Always act on the authoritative record in `tasks`, never a stale closure copy.
+  // A fired timer's closure can reference an outdated task object (e.g. created by a
+  // duplicate scheduling); checking/mutating that stale copy is one way a "cancelled"
+  // task kept firing. Re-resolve by id and bail (clearing any timer) if it's gone or
+  // already cancelled.
+  const current = tasks.find(t => t.id === task.id);
+  if (!current || current.status === 'cancelled') {
+    console.log(`[Scheduler] Task ${task.id} is gone or cancelled, skipping execution`);
+    if (timers.has(task.id)) {
+      clearTimeout(timers.get(task.id));
+      timers.delete(task.id);
+    }
     return;
   }
-  
+  task = current;
+
+  console.log(`[Scheduler] Executing task ${task.id} (${task.type}): ${task.message}`);
+
   task.status = 'running';
   task.lastTriggered = new Date().toISOString();
   saveTasks();
@@ -442,8 +452,14 @@ async function executeTask(task) {
     saveTasks();
   }
   
-  // Clean up timer
-  if (timers.has(task.id)) {
+  // Clean up the fired timer — but ONLY if we did not just schedule a fresh one.
+  // For recurring tasks the reschedule above stored the NEXT timer in `timers`;
+  // deleting it here would orphan that timer so cancelTask/deleteTask could never
+  // clear it (the original runaway-task bug, where a cancelled recurring task kept
+  // firing because its live timer was untracked).
+  const rescheduled = Boolean(task.cronExpression) && task.status === 'pending';
+  if (!rescheduled && timers.has(task.id)) {
+    clearTimeout(timers.get(task.id));
     timers.delete(task.id);
   }
 }
@@ -786,22 +802,39 @@ const server = http.createServer(async (req, res) => {
 // --- Startup ---
 loadTasks();
 
-// Reschedule all pending tasks on startup
-tasks.forEach(task => {
-  if (task.status === 'pending' && task.nextTrigger) {
-    const triggerTime = new Date(task.nextTrigger);
-    if (triggerTime > new Date()) {
-      scheduleTask(task);
-    } else {
-      // Missed trigger - execute now
-      console.log(`[Scheduler] Task ${task.id} missed its trigger, executing now`);
-      executeTask(task);
+function rearmPendingTasks() {
+  // Reschedule all pending tasks
+  tasks.forEach(task => {
+    if (task.status === 'pending' && task.nextTrigger) {
+      const triggerTime = new Date(task.nextTrigger);
+      if (triggerTime > new Date()) {
+        scheduleTask(task);
+      } else {
+        // Missed trigger - execute now
+        console.log(`[Scheduler] Task ${task.id} missed its trigger, executing now`);
+        executeTask(task);
+      }
     }
+  });
+}
+
+// Exit cleanly if another scheduler already owns the port. Critical: a second
+// instance must NOT arm any timers — a "ghost" process whose timers keep firing but
+// that isn't listening on the port is unreachable by the HTTP cancel/delete API,
+// which is exactly how a recurring task kept spamming after the user cancelled it.
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error(`[Scheduler] Port ${PORT} already in use; another scheduler instance is running. Exiting to avoid duplicate timers.`);
+    process.exit(0);
   }
+  console.error('[Scheduler] Server error:', err);
+  process.exit(1);
 });
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`[Scheduler Service] Listening on http://localhost:${PORT}`);
+  // Only arm timers once we actually own the port (see the 'error' handler above).
+  rearmPendingTasks();
   console.log(`[Scheduler Service] Loaded ${tasks.length} tasks, ${timers.size} active timers`);
 });
 

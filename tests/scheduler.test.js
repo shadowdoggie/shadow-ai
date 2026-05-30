@@ -6,6 +6,27 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import http from 'http';
+import { spawn } from 'node:child_process';
+import nodePath from 'node:path';
+import os from 'node:os';
+import nodeFs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+const TEST_DIR = nodePath.dirname(fileURLToPath(import.meta.url));
+const SCHEDULER_JS = nodePath.join(TEST_DIR, '..', 'scheduler.js');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function waitForSchedulerHealth(base, timeoutMs = 6000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const r = await fetch(`${base}/api/health`);
+      if (r.ok) return true;
+    } catch (_) { /* not up yet */ }
+    await sleep(100);
+  }
+  throw new Error('scheduler did not become healthy in time');
+}
 
 const SCHEDULER_PORT = 19333;
 const SCHEDULER_BASE = `http://localhost:${SCHEDULER_PORT}`;
@@ -177,7 +198,76 @@ describe('scheduler startup — missed task handling', () => {
     const now = new Date();
     const triggerTime = new Date(task.nextTrigger);
     const missed = triggerTime <= now;
-    
+
     expect(missed).toBe(false);
   });
+});
+
+describe('scheduler — runaway recurring-task protection (live process)', () => {
+  let proc;
+  let tasksFile;
+  const port = 19347;
+  const base = `http://127.0.0.1:${port}`;
+
+  beforeEach(async () => {
+    tasksFile = nodePath.join(os.tmpdir(), `shadow_sched_test_${Date.now()}_${Math.random().toString(36).slice(2)}.json`);
+    nodeFs.writeFileSync(tasksFile, '[]', 'utf8');
+    proc = spawn(process.execPath, [SCHEDULER_JS], {
+      env: { ...process.env, SHADOW_SCHEDULER_PORT: String(port), SHADOW_SCHEDULER_TASKS_FILE: tasksFile },
+      stdio: 'ignore'
+    });
+    await waitForSchedulerHealth(base);
+  });
+
+  afterEach(async () => {
+    if (proc && !proc.killed) {
+      proc.kill();
+      await sleep(100);
+    }
+    try { nodeFs.unlinkSync(tasksFile); } catch (_) { /* already gone */ }
+  });
+
+  it('stops firing notifications once a recurring task is cancelled', async () => {
+    const createRes = await fetch(`${base}/api/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'reminder', message: 'tick', cronExpression: 'every 1 second' })
+    });
+    expect(createRes.status).toBe(201);
+    const { task } = await createRes.json();
+    expect(task.id).toBeTruthy();
+
+    // It should be firing.
+    await sleep(2500);
+    const before = await (await fetch(`${base}/api/notifications`)).json();
+    expect(before.count).toBeGreaterThan(0);
+
+    // Cancel it, then drain anything that was queued in-flight.
+    const cancelRes = await fetch(`${base}/api/tasks/${task.id}`, { method: 'DELETE' });
+    expect(cancelRes.status).toBe(200);
+    await sleep(1200);
+    await fetch(`${base}/api/notifications`); // clear
+
+    // Now it must be completely silent — no orphaned timer still firing.
+    await sleep(2500);
+    const after = await (await fetch(`${base}/api/notifications`)).json();
+    expect(after.count).toBe(0);
+
+    // And no timers should remain armed for it.
+    const health = await (await fetch(`${base}/api/health`)).json();
+    expect(health.activeTimers).toBe(0);
+  }, 20000);
+
+  it('a second instance on the same port exits cleanly instead of running ghost timers', async () => {
+    const ghost = spawn(process.execPath, [SCHEDULER_JS], {
+      env: { ...process.env, SHADOW_SCHEDULER_PORT: String(port), SHADOW_SCHEDULER_TASKS_FILE: tasksFile },
+      stdio: 'ignore'
+    });
+    const outcome = await new Promise((resolve) => {
+      const t = setTimeout(() => { try { ghost.kill(); } catch (_) {} resolve('still-running'); }, 6000);
+      ghost.on('exit', (code) => { clearTimeout(t); resolve(code); });
+    });
+    // EADDRINUSE handler must exit the duplicate with code 0 (no port-less ghost firer).
+    expect(outcome).toBe(0);
+  }, 12000);
 });

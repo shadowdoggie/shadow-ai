@@ -12,7 +12,7 @@
   #define RepoRoot ".."
 #endif
 #define MyAppName "Shadow AI"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "shadowdoggie"
 #define MyAppURL "https://github.com/shadowdoggie/shadow-ai"
 #define MyAppLauncher "run.bat"
