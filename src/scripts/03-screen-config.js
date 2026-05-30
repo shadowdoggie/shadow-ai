@@ -789,7 +789,7 @@ async function applyShadowSettingsUpdate(args = {}) {
 
   const nextProvider = valueOrCurrent(requestedArgs.subagent_provider, subagentProvider).toLowerCase();
   if (nextProvider !== subagentProvider) {
-    if (['gemini', OPENAI_CODEX_PROVIDER, 'minimax', 'moonshot', 'ollama', 'lmstudio_local', 'custom_openai'].includes(nextProvider)) {
+    if (['gemini', OPENAI_CODEX_PROVIDER, 'minimax', 'moonshot', 'ollama', 'lmstudio_local', 'custom_openai', 'llamacpp_builtin'].includes(nextProvider)) {
       subagentProvider = nextProvider;
       localStorage.setItem('shadow_subagent_provider', subagentProvider);
       if (selectSubagentProvider) {

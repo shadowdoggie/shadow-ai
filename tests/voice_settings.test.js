@@ -407,8 +407,8 @@ describe('voice setting session behavior', () => {
     expect(indexHtml).toContain('input-assistant-name');
     expect(indexHtml).toContain('Subagent Prompt Brain');
     expect(indexHtml).toContain('Refine subagent prompts and steering with the selected subagent model');
-    expect(indexHtml).toContain('01-state-dom.js?v=release150b-20260530');
-    expect(indexHtml).toContain('11-subagents-runner.js?v=ctx-overflow-recovery-20260530');
+    expect(indexHtml).toContain('01-state-dom.js?v=llamacpp-e-20260530');
+    expect(indexHtml).toContain('11-subagents-runner.js?v=llamacpp-i-20260530');
   });
 
   it('offers LM Studio + custom OpenAI-compatible subagent providers, with local Ollama removed', () => {
@@ -949,10 +949,10 @@ describe('voice setting session behavior', () => {
     expect(screenConfig).not.toContain('hey shadow');
     expect(bootUi).not.toContain('startWakeWordListener();');
     expect(liveConnection).not.toContain('startWakeWordListener();');
-    expect(indexHtml).toContain('02-boot-ui.js?v=release150b-20260530');
-    expect(indexHtml).toContain('03-screen-config.js?v=remove-ollama-local-20260530');
-    expect(indexHtml).toContain('05-live-connection.js?v=remove-ollama-local-20260530');
-    expect(indexHtml).toContain('08-memory.js?v=steer-not-cancel-20260530');
+    expect(indexHtml).toContain('02-boot-ui.js?v=llamacpp-i-20260530');
+    expect(indexHtml).toContain('03-screen-config.js?v=llamacpp-20260530');
+    expect(indexHtml).toContain('05-live-connection.js?v=llamacpp-h-20260530');
+    expect(indexHtml).toContain('08-memory.js?v=llamacpp-f-20260530');
     expect(indexHtml).toContain('10-scheduler-proactive.js?v=reboot-truth-20260528');
   });
 
@@ -1114,5 +1114,68 @@ describe('voice setting session behavior', () => {
     // Local providers auto-detect a model so they are never left with a broken model id.
     expect(bootUi).toContain('/api/lmstudio/models?endpoint=');
     expect(bootUi).toContain('/api/openai-compat/models?endpoint=');
+  });
+
+  it('ships a built-in llama.cpp managed provider (download + run + subagent wiring)', () => {
+    const indexHtml = fs.readFileSync(path.join(process.cwd(), 'src', 'index.html'), 'utf8');
+    const runPs1 = fs.readFileSync(path.join(process.cwd(), 'run.ps1'), 'utf8');
+    const stateDom = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '01-state-dom.js'), 'utf8');
+    const bootUi = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '02-boot-ui.js'), 'utf8');
+    const runner = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '11-subagents-runner.js'), 'utf8');
+    const screenConfig = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '03-screen-config.js'), 'utf8');
+
+    // Backend manager endpoints + helpers.
+    expect(runPs1).toContain('/api/llamacpp/status');
+    expect(runPs1).toContain('/api/llamacpp/binary/install');
+    expect(runPs1).toContain('/api/llamacpp/models/download');
+    expect(runPs1).toContain('/api/llamacpp/start');
+    expect(runPs1).toContain('/api/llamacpp/stop');
+    expect(runPs1).toContain('function Get-ShadowLlamacppBackend');
+    expect(runPs1).toContain('ggml-org/llama.cpp/releases/latest');
+    expect(runPs1).toContain('Ensure-ShadowDownloaderScript');
+
+    // Provider option + manager UI.
+    expect(indexHtml).toContain('value="llamacpp_builtin"');
+    expect(indexHtml).toContain('id="group-llamacpp-builtin-settings"');
+    expect(indexHtml).toContain('id="btn-llamacpp-install"');
+    expect(indexHtml).toContain('id="btn-llamacpp-download"');
+    expect(indexHtml).toContain('id="btn-llamacpp-stop"');
+    expect(indexHtml).toContain('id="select-llamacpp-model"');
+
+    // User-friendly model picker: curated catalog + quant + Hugging Face search (no manual links required).
+    expect(indexHtml).toContain('id="select-llamacpp-catalog"');
+    expect(indexHtml).toContain('id="select-llamacpp-quant"');
+    expect(indexHtml).toContain('id="input-llamacpp-search"');
+    expect(runPs1).toContain('/api/llamacpp/hf-search');
+    expect(runPs1).toContain('function Resolve-ShadowGgufFiles');
+    expect(bootUi).toContain('LLAMACPP_MODEL_CATALOG');
+    expect(bootUi).toContain('async function llamacppSearchHf');
+
+    // Server auto-starts on subagent spawn (no manual Start button); MoE expert offload auto-tunes;
+    // big split-GGUF models download all parts.
+    expect(runner).toContain('async function ensureLlamacppServerRunning');
+    expect(runner).toContain('ensureLlamacppServerRunning()');
+    expect(runner).toContain('isMoeModelName');
+    expect(runPs1).toContain('--n-cpu-moe');
+    expect(runPs1).toContain('--cpu-moe');
+    expect(runPs1).toContain('function Ensure-ShadowModelDownloadScript');
+
+    // State + frontend logic.
+    expect(stateDom).toContain('let llamacppBuiltinBase');
+    expect(bootUi).toContain('async function refreshLlamacppStatus');
+    expect(bootUi).toContain('async function llamacppStartServer');
+
+    // Subagent routing: built-in llama.cpp is treated as a local OpenAI-compatible provider.
+    expect(runner).toContain('function getLlamacppBuiltinBase');
+    expect(runner).toContain("provider === 'llamacpp_builtin'");
+    expect(screenConfig).toContain("'llamacpp_builtin'");
+
+    // Accurate model sizes, safe binary auto-update, and the asset-matcher fix that must NOT
+    // pick the cudart zip as the main build (anchored to '^llama-').
+    expect(runPs1).toContain('/api/llamacpp/model-size');
+    expect(runPs1).toContain('/api/llamacpp/check-update');
+    expect(runPs1).toContain('function Get-ShadowGgufSizeInfo');
+    expect(runPs1).toContain('^llama-.*bin-win-cuda');
+    expect(bootUi).toContain('maybeAutoUpdateLlamacpp');
   });
 });

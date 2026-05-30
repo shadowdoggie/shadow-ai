@@ -816,6 +816,365 @@ $serverScript = {
         return $privatePath
     }
 
+    # ---------------------------------------------------------------------------
+    # Built-in llama.cpp manager. Stores the downloaded server binary under
+    # llamacpp/bin and user-downloaded GGUF models under llamacpp/models (both
+    # persist across app upgrades). The running server is tracked via a status
+    # file (PID/port/model) so state survives across listener-loop iterations.
+    # ---------------------------------------------------------------------------
+    function Get-ShadowLlamacppDir {
+        $dir = Join-Path $scriptDir "llamacpp"
+        foreach ($sub in @($dir, (Join-Path $dir "bin"), (Join-Path $dir "models"))) {
+            if (-not (Test-Path $sub -PathType Container)) { New-Item -ItemType Directory -Path $sub -Force | Out-Null }
+        }
+        return $dir
+    }
+
+    function Get-ShadowLlamacppModelsDir { return (Join-Path (Get-ShadowLlamacppDir) "models") }
+    function Get-ShadowLlamacppBinDir { return (Join-Path (Get-ShadowLlamacppDir) "bin") }
+
+    # Pick the llama.cpp build flavour for this machine: cuda (NVIDIA), vulkan
+    # (cross-vendor: AMD/Intel and a safe NVIDIA fallback), or cpu.
+    function Get-ShadowLlamacppBackend {
+        try {
+            $gpus = @(Get-CimInstance Win32_VideoController -ErrorAction Stop | Select-Object -ExpandProperty Name)
+        } catch { $gpus = @() }
+        $joined = ($gpus -join ' ').ToLowerInvariant()
+        if ($joined -match 'nvidia|geforce|\brtx\b|\bgtx\b|quadro|tesla') { return 'cuda' }
+        if ($joined -match 'radeon|\bamd\b|intel|\barc\b') { return 'vulkan' }
+        return 'cpu'
+    }
+
+    function Get-ShadowLlamacppServerExe {
+        $bin = Get-ShadowLlamacppBinDir
+        $exe = Join-Path $bin "llama-server.exe"
+        if (Test-Path $exe) { return $exe }
+        $found = Get-ChildItem -Path $bin -Filter "llama-server.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($found) { return $found.FullName }
+        return $null
+    }
+
+    function Get-ShadowLlamacppModels {
+        $modelsDir = Get-ShadowLlamacppModelsDir
+        $out = @()
+        foreach ($f in (Get-ChildItem -Path $modelsDir -Filter "*.gguf" -ErrorAction SilentlyContinue | Sort-Object Name)) {
+            # For split sets, only surface the first part; llama.cpp loads the remaining parts automatically.
+            if (($f.Name -match '\d{5}-of-\d{5}') -and ($f.Name -notmatch '00001-of-')) { continue }
+            $out += [PSCustomObject]@{ name = $f.Name; sizeBytes = [long]$f.Length }
+        }
+        return $out
+    }
+
+    function Get-ShadowLlamacppServerStatusPath { return (Join-Path (Get-ShadowLlamacppDir) "server-status.json") }
+
+    function Read-ShadowJsonFile {
+        param([string]$Path)
+        if (-not (Test-Path $Path -PathType Leaf)) { return $null }
+        try { return (Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json) } catch { return $null }
+    }
+
+    # Reports the running built-in llama.cpp server, verifying the PID is alive and
+    # the port is actually listening; clears the stale status file otherwise.
+    function Get-ShadowLlamacppServerState {
+        $st = Read-ShadowJsonFile (Get-ShadowLlamacppServerStatusPath)
+        if (-not $st -or -not $st.pid) { return $null }
+        $alive = $false
+        try { if (Get-Process -Id ([int]$st.pid) -ErrorAction SilentlyContinue) { $alive = $true } } catch {}
+        $listening = $false
+        if ($st.port) {
+            $conn = Get-NetTCPConnection -LocalPort ([int]$st.port) -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($conn) { $listening = $true }
+        }
+        if (-not $alive) { Remove-Item -LiteralPath (Get-ShadowLlamacppServerStatusPath) -Force -ErrorAction SilentlyContinue; return $null }
+        return [PSCustomObject]@{ pid = [int]$st.pid; port = [int]$st.port; model = [string]$st.model; ctx = [int]$st.ctx; listening = $listening }
+    }
+
+    # The llama.cpp GitHub-release asset (zip) matching this machine's backend.
+    function Get-ShadowLlamacppAssetUrl {
+        param([string]$Backend)
+        $headers = @{ "User-Agent" = "ShadowAI-llamacpp"; "Accept" = "application/vnd.github+json" }
+        $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" -Headers $headers -TimeoutSec 15
+        $assets = @($rel.assets)
+        # IMPORTANT: the main build zip starts with 'llama-' (e.g. llama-<build>-bin-win-cuda-12.4-x64.zip).
+        # Anchor to '^llama-' so we never accidentally pick the 'cudart-...-bin-win-cuda-...zip' runtime zip
+        # (which has the CUDA DLLs but NO llama-server.exe).
+        $chosen = $null
+        $cudart = $null
+        if ($Backend -eq 'cuda') {
+            # Multiple CUDA versions ship (e.g. 12.4 and 13.3); pick the LOWEST for broadest driver compat.
+            $chosen = @($assets | Where-Object { $_.name -match '^llama-.*bin-win-cuda-[\d.]+-x64\.zip$' } | Sort-Object name) | Select-Object -First 1
+            if ($chosen -and ($chosen.name -match 'cuda-([\d.]+)-x64')) {
+                $cudaVer = [regex]::Escape($Matches[1])
+                $cudart = $assets | Where-Object { $_.name -match "^cudart-.*cuda-$cudaVer-x64\.zip$" } | Select-Object -First 1
+            }
+        } elseif ($Backend -eq 'vulkan') {
+            $chosen = $assets | Where-Object { $_.name -match '^llama-.*bin-win-vulkan-x64\.zip$' } | Select-Object -First 1
+        } else {
+            $chosen = $assets | Where-Object { $_.name -match '^llama-.*bin-win-cpu-x64\.zip$' } | Select-Object -First 1
+        }
+        return [PSCustomObject]@{
+            tag        = [string]$rel.tag_name
+            mainUrl    = if ($chosen) { [string]$chosen.browser_download_url } else { "" }
+            mainName   = if ($chosen) { [string]$chosen.name } else { "" }
+            cudartUrl  = if ($cudart) { [string]$cudart.browser_download_url } else { "" }
+        }
+    }
+
+    # Resolve a curated catalog entry (repo + quant like "Q4_K_M") to the exact .gguf
+    # filename by querying the Hugging Face API, so the catalog never hardcodes filenames
+    # that drift. Prefers a single-file quant; falls back to any matching gguf.
+    function Resolve-ShadowGgufFiles {
+        param([string]$Repo, [string]$Quant)
+        $headers = @{ "User-Agent" = "ShadowAI-llamacpp" }
+        $info = Invoke-RestMethod -Uri "https://huggingface.co/api/models/$Repo" -Headers $headers -TimeoutSec 25
+        $files = @()
+        if ($info.siblings) { $files = @($info.siblings | ForEach-Object { [string]$_.rfilename } | Where-Object { $_ -match '(?i)\.gguf$' }) }
+        if ($files.Count -eq 0) { throw "No .gguf files found in '$Repo'." }
+        $q = $Quant.ToLowerInvariant()
+        $matching = @($files | Where-Object { $_.ToLowerInvariant().Contains($q) })
+        if ($matching.Count -eq 0) { $matching = $files }
+        # Big models ship as split sets (00001-of-0000N). Return ALL parts of the matching quant
+        # (sorted) so every part downloads; llama.cpp auto-loads the rest from the first part.
+        $split = @($matching | Where-Object { $_ -match '\d{5}-of-\d{5}' } | Sort-Object)
+        if ($split.Count -gt 0) { return $split }
+        $single = @($matching | Where-Object { $_ -notmatch '\d{5}-of-\d{5}' } | Sort-Object)
+        if ($single.Count -gt 0) { return @($single[0]) }
+        return @($matching[0])
+    }
+
+    function Get-ShadowGgufBytes {
+        param($Entry)
+        if ($Entry.lfs -and $Entry.lfs.size) { return [long]$Entry.lfs.size }
+        if ($Entry.size) { return [long]$Entry.size }
+        return 0
+    }
+
+    # Real total download size (bytes) of a repo+quant from the HF tree API (sums split parts;
+    # uses lfs.size since GGUFs are LFS objects). Used to show accurate sizes in the model picker.
+    function Get-ShadowGgufSizeInfo {
+        param([string]$Repo, [string]$Quant)
+        $headers = @{ "User-Agent" = "ShadowAI-llamacpp" }
+        $tree = Invoke-RestMethod -Uri "https://huggingface.co/api/models/$Repo/tree/main?recursive=true" -Headers $headers -TimeoutSec 25
+        $ggufs = @($tree | Where-Object { $_.path -match '(?i)\.gguf$' })
+        if ($ggufs.Count -eq 0) { return [PSCustomObject]@{ bytes = 0; parts = 0 } }
+        $q = $Quant.ToLowerInvariant()
+        $match = @($ggufs | Where-Object { $_.path.ToLowerInvariant().Contains($q) })
+        if ($match.Count -eq 0) { $match = $ggufs }
+        $split = @($match | Where-Object { $_.path -match '\d{5}-of-\d{5}' })
+        if ($split.Count -gt 0) {
+            $total = 0L
+            foreach ($e in $split) { $total += (Get-ShadowGgufBytes $e) }
+            return [PSCustomObject]@{ bytes = $total; parts = $split.Count }
+        }
+        $sorted = @($match | Sort-Object { Get-ShadowGgufBytes $_ })
+        if ($sorted.Count -gt 0) { return [PSCustomObject]@{ bytes = (Get-ShadowGgufBytes $sorted[0]); parts = 1 } }
+        return [PSCustomObject]@{ bytes = 0; parts = 0 }
+    }
+
+    # Background downloader for a model = one or more files from a HF repo (handles split sets).
+    # Skips parts that already exist (resume on retry). Writes overall progress to a status JSON.
+    function Ensure-ShadowModelDownloadScript {
+        $scriptPath = Join-Path (Get-ShadowLlamacppDir) "model-download.ps1"
+        $body = @'
+param(
+    [Parameter(Mandatory=$true)][string]$Repo,
+    [Parameter(Mandatory=$true)][string]$Files,
+    [Parameter(Mandatory=$true)][string]$DestDir,
+    [Parameter(Mandatory=$true)][string]$StatusPath
+)
+$ErrorActionPreference = "Stop"
+function Write-Status($o) { $o | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath $StatusPath }
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    Add-Type -AssemblyName System.Net.Http
+    $list = @($Files -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $count = $list.Count
+    for ($idx = 0; $idx -lt $count; $idx++) {
+        $file = $list[$idx]
+        $dest = Join-Path $DestDir $file
+        if (Test-Path $dest) { continue }
+        $tmp = "$dest.part"
+        $url = "https://huggingface.co/$Repo/resolve/main/$file" + "?download=true"
+        $client = New-Object System.Net.Http.HttpClient
+        $client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 ShadowAI")
+        $client.Timeout = [TimeSpan]::FromHours(12)
+        $resp = $client.GetAsync($url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
+        if (-not $resp.IsSuccessStatusCode) { throw "HTTP $([int]$resp.StatusCode) fetching $file" }
+        $total = 0L
+        if ($resp.Content.Headers.ContentLength) { $total = [long]$resp.Content.Headers.ContentLength }
+        $in = $resp.Content.ReadAsStreamAsync().Result
+        $out = [System.IO.File]::Create($tmp)
+        $buf = New-Object byte[] (1048576)
+        $read = 0L; $last = Get-Date
+        while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+            $out.Write($buf, 0, $n); $read += $n
+            if (((Get-Date) - $last).TotalMilliseconds -gt 700) {
+                Write-Status @{ state = "downloading"; file = $file; fileIndex = ($idx + 1); fileCount = $count; bytes = $read; total = $total }
+                $last = Get-Date
+            }
+        }
+        $out.Close(); $in.Close()
+        Move-Item -LiteralPath $tmp -Destination $dest -Force
+    }
+    Write-Status @{ state = "done"; fileCount = $count }
+} catch {
+    Write-Status @{ state = "error"; error = $_.Exception.Message }
+}
+'@
+        Set-Content -Encoding utf8 -LiteralPath $scriptPath -Value $body
+        return $scriptPath
+    }
+
+    # Writes (once) the background downloader used for the llama.cpp binary and for
+    # GGUF model downloads, so the single-threaded HTTP listener never blocks on a
+    # multi-GB transfer. Progress is streamed to a status JSON the UI polls.
+    function Ensure-ShadowDownloaderScript {
+        $scriptPath = Join-Path (Get-ShadowLlamacppDir) "downloader.ps1"
+        $body = @'
+param(
+    [Parameter(Mandatory=$true)][string]$Url,
+    [Parameter(Mandatory=$true)][string]$Dest,
+    [Parameter(Mandatory=$true)][string]$StatusPath,
+    [string]$ExtractZipTo = ""
+)
+$ErrorActionPreference = "Stop"
+function Write-Status($o) { $o | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath $StatusPath }
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    Write-Status @{ state = "downloading"; bytes = 0; total = 0; dest = $Dest }
+    $tmp = "$Dest.part"
+    Add-Type -AssemblyName System.Net.Http
+    $client = New-Object System.Net.Http.HttpClient
+    $client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 ShadowAI")
+    $client.Timeout = [TimeSpan]::FromHours(6)
+    $resp = $client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
+    if (-not $resp.IsSuccessStatusCode) { throw "HTTP $([int]$resp.StatusCode) fetching $Url" }
+    $total = 0L
+    if ($resp.Content.Headers.ContentLength) { $total = [long]$resp.Content.Headers.ContentLength }
+    $inStream = $resp.Content.ReadAsStreamAsync().Result
+    $outStream = [System.IO.File]::Create($tmp)
+    $buffer = New-Object byte[] (1048576)
+    $read = 0L
+    $last = Get-Date
+    while (($n = $inStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+        $outStream.Write($buffer, 0, $n)
+        $read += $n
+        if (((Get-Date) - $last).TotalMilliseconds -gt 700) {
+            Write-Status @{ state = "downloading"; bytes = $read; total = $total; dest = $Dest }
+            $last = Get-Date
+        }
+    }
+    $outStream.Close(); $inStream.Close()
+    if ($ExtractZipTo) {
+        Write-Status @{ state = "extracting"; bytes = $read; total = $total }
+        if (-not (Test-Path $ExtractZipTo)) { New-Item -ItemType Directory -Path $ExtractZipTo -Force | Out-Null }
+        # Windows PowerShell 5.1 (.NET 4.8) has no overwrite overload for ExtractToDirectory,
+        # so use Expand-Archive -Force (it overwrites existing files on re-install/update).
+        $zipFinal = $Dest
+        Move-Item -LiteralPath $tmp -Destination $zipFinal -Force
+        Expand-Archive -LiteralPath $zipFinal -DestinationPath $ExtractZipTo -Force
+        Remove-Item -LiteralPath $zipFinal -Force -ErrorAction SilentlyContinue
+        Write-Status @{ state = "done"; bytes = $read; total = $total; extractedTo = $ExtractZipTo }
+    } else {
+        Move-Item -LiteralPath $tmp -Destination $Dest -Force
+        Write-Status @{ state = "done"; bytes = $read; total = $total; dest = $Dest }
+    }
+} catch {
+    Write-Status @{ state = "error"; error = $_.Exception.Message }
+}
+'@
+        Set-Content -Encoding utf8 -LiteralPath $scriptPath -Value $body
+        return $scriptPath
+    }
+
+    function Start-ShadowBackgroundDownload {
+        param([string]$Url, [string]$Dest, [string]$StatusPath, [string]$ExtractZipTo = "")
+        $downloader = Ensure-ShadowDownloaderScript
+        @{ state = "starting"; dest = $Dest } | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath $StatusPath
+        $psArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $downloader, "-Url", $Url, "-Dest", $Dest, "-StatusPath", $StatusPath)
+        if ($ExtractZipTo) { $psArgs += @("-ExtractZipTo", $ExtractZipTo) }
+        Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WindowStyle Hidden | Out-Null
+    }
+
+    # Dedicated llama.cpp binary installer. Downloads + extracts the main build, then ONLY
+    # fetches the separate CUDA runtime if the main build didn't already bundle it (recent
+    # CUDA builds do) -- this avoids two parallel extracts racing on the same cublas/cudart DLL.
+    function Ensure-ShadowLlamacppInstallScript {
+        $scriptPath = Join-Path (Get-ShadowLlamacppDir) "installer.ps1"
+        $body = @'
+param(
+    [Parameter(Mandatory=$true)][string]$MainUrl,
+    [Parameter(Mandatory=$true)][string]$BinDir,
+    [Parameter(Mandatory=$true)][string]$StatusPath,
+    [string]$CudartUrl = "",
+    [string]$BuildTag = ""
+)
+$ErrorActionPreference = "Stop"
+function Write-Status($o) { $o | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath $StatusPath }
+function Get-Remote($url, $dest) {
+    $tmp = "$dest.part"
+    Add-Type -AssemblyName System.Net.Http
+    $client = New-Object System.Net.Http.HttpClient
+    $client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 ShadowAI")
+    $client.Timeout = [TimeSpan]::FromHours(6)
+    $resp = $client.GetAsync($url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
+    if (-not $resp.IsSuccessStatusCode) { throw "HTTP $([int]$resp.StatusCode) fetching $url" }
+    $total = 0L
+    if ($resp.Content.Headers.ContentLength) { $total = [long]$resp.Content.Headers.ContentLength }
+    $in = $resp.Content.ReadAsStreamAsync().Result
+    $out = [System.IO.File]::Create($tmp)
+    $buf = New-Object byte[] (1048576)
+    $read = 0L; $last = Get-Date
+    while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+        $out.Write($buf, 0, $n); $read += $n
+        if (((Get-Date) - $last).TotalMilliseconds -gt 700) { Write-Status @{ state = "downloading"; bytes = $read; total = $total }; $last = Get-Date }
+    }
+    $out.Close(); $in.Close()
+    Move-Item -LiteralPath $tmp -Destination $dest -Force
+}
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $llamaDir = Split-Path -Parent $BinDir
+    # Never overwrite the binary while a server is running (would break a live subagent). Defer.
+    $serverStatus = Join-Path $llamaDir "server-status.json"
+    if (Test-Path $serverStatus) {
+        try {
+            $ss = Get-Content $serverStatus -Raw | ConvertFrom-Json
+            if ($ss.pid -and (Get-Process -Id ([int]$ss.pid) -ErrorAction SilentlyContinue)) {
+                Write-Status @{ state = "deferred" }
+                exit 0
+            }
+        } catch {}
+    }
+    if (-not (Test-Path $BinDir)) { New-Item -ItemType Directory -Path $BinDir -Force | Out-Null }
+    Write-Status @{ state = "downloading"; bytes = 0; total = 0 }
+    $mainZip = Join-Path $BinDir "_main.zip"
+    Get-Remote $MainUrl $mainZip
+    Write-Status @{ state = "extracting" }
+    Expand-Archive -LiteralPath $mainZip -DestinationPath $BinDir -Force
+    Remove-Item -LiteralPath $mainZip -Force -ErrorAction SilentlyContinue
+    if ($CudartUrl) {
+        $haveRt = (Get-ChildItem -Path $BinDir -Filter "cudart64_*.dll" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if (-not $haveRt) { $haveRt = (Get-ChildItem -Path $BinDir -Filter "cublas64_*.dll" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1) }
+        if (-not $haveRt) {
+            Write-Status @{ state = "downloading" }
+            $cudZip = Join-Path $BinDir "_cudart.zip"
+            Get-Remote $CudartUrl $cudZip
+            Write-Status @{ state = "extracting" }
+            Expand-Archive -LiteralPath $cudZip -DestinationPath $BinDir -Force
+            Remove-Item -LiteralPath $cudZip -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if ($BuildTag) { Set-Content -Encoding utf8 -LiteralPath (Join-Path $llamaDir "build.txt") -Value $BuildTag }
+    Write-Status @{ state = "done" }
+} catch {
+    Write-Status @{ state = "error"; error = $_.Exception.Message }
+}
+'@
+        Set-Content -Encoding utf8 -LiteralPath $scriptPath -Value $body
+        return $scriptPath
+    }
+
     function Get-ShadowGoogleCredentials {
         $privateDir = Get-ShadowPrivateDir
         Get-ChildItem -Path $scriptDir -Filter "client_secret_*.json" -File -ErrorAction SilentlyContinue | ForEach-Object {
@@ -2806,6 +3165,236 @@ try {
                     continue
                 }
                 Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405
+                continue
+            }
+
+            # ---- Built-in llama.cpp manager endpoints ----
+            if ($urlPath -eq "/api/llamacpp/status") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                $exe = Get-ShadowLlamacppServerExe
+                $srv = Get-ShadowLlamacppServerState
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{
+                    status          = "success"
+                    backend         = (Get-ShadowLlamacppBackend)
+                    binaryInstalled = [bool]$exe
+                    serverExe       = if ($exe) { [string]$exe } else { "" }
+                    models          = (Get-ShadowLlamacppModels)
+                    server          = $srv
+                    dir             = (Get-ShadowLlamacppDir)
+                }) 200
+                continue
+            }
+            if ($urlPath -eq "/api/llamacpp/binary/install") {
+                if ($request.HttpMethod -ne "POST") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                try {
+                    $auto = $false
+                    try {
+                        $reader = New-Object System.IO.StreamReader($request.InputStream)
+                        $bodyTxt = $reader.ReadToEnd()
+                        if (-not [string]::IsNullOrWhiteSpace($bodyTxt)) { $p = $bodyTxt | ConvertFrom-Json; if ($p.auto) { $auto = $true } }
+                    } catch {}
+                    $existing = Get-ShadowLlamacppServerState
+                    if ($auto -and $existing) {
+                        # An auto-update must never interrupt a running subagent. Defer to next launch.
+                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; deferred = $true }) 200
+                        continue
+                    }
+                    # Manual install/update: stop any running server first so its loaded DLLs
+                    # (cublas/cudart) aren't locked while we overwrite them.
+                    if ($existing) {
+                        try { Stop-Process -Id $existing.pid -Force -ErrorAction SilentlyContinue } catch {}
+                        Remove-Item -LiteralPath (Get-ShadowLlamacppServerStatusPath) -Force -ErrorAction SilentlyContinue
+                    }
+                    $backend = Get-ShadowLlamacppBackend
+                    $asset = Get-ShadowLlamacppAssetUrl -Backend $backend
+                    if (-not $asset.mainUrl) { throw "No llama.cpp Windows '$backend' build found in the latest release." }
+                    $bin = Get-ShadowLlamacppBinDir
+                    $statusMain = Join-Path (Get-ShadowLlamacppDir) "install-status.json"
+                    $installer = Ensure-ShadowLlamacppInstallScript
+                    @{ state = "starting" } | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath $statusMain
+                    $psArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $installer, "-MainUrl", $asset.mainUrl, "-BinDir", $bin, "-StatusPath", $statusMain)
+                    if ($asset.cudartUrl) { $psArgs += @("-CudartUrl", $asset.cudartUrl) }
+                    if ($asset.tag) { $psArgs += @("-BuildTag", $asset.tag) }
+                    Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WindowStyle Hidden | Out-Null
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; backend = $backend; tag = $asset.tag; asset = $asset.mainName }) 200
+                } catch {
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = $_.Exception.Message }) 200
+                }
+                continue
+            }
+            if ($urlPath -eq "/api/llamacpp/binary/status") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                $main = Read-ShadowJsonFile (Join-Path (Get-ShadowLlamacppDir) "install-status.json")
+                $exe = Get-ShadowLlamacppServerExe
+                $state = "not_installed"
+                if ($main -and $main.state -eq "error") { $state = "error" }
+                elseif ($main -and ([string]$main.state -in @("starting", "downloading", "extracting"))) { $state = "installing" }
+                elseif ($exe) { $state = "installed" }
+                $bytes = 0; $total = 0
+                if ($main -and $main.bytes) { $bytes = [long]$main.bytes }
+                if ($main -and $main.total) { $total = [long]$main.total }
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{
+                    status = "success"; state = $state; binaryInstalled = [bool]$exe
+                    bytes = $bytes; total = $total
+                    error = if ($main -and $main.state -eq "error") { [string]$main.error } else { "" }
+                }) 200
+                continue
+            }
+            if ($urlPath -eq "/api/llamacpp/models") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; models = (Get-ShadowLlamacppModels) }) 200
+                continue
+            }
+            if ($urlPath -eq "/api/llamacpp/models/download") {
+                if ($request.HttpMethod -ne "POST") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                try {
+                    $reader = New-Object System.IO.StreamReader($request.InputStream)
+                    $payload = $reader.ReadToEnd() | ConvertFrom-Json
+                    $modelsDir = Get-ShadowLlamacppModelsDir
+                    $statusPath = Join-Path (Get-ShadowLlamacppDir) "model-download-status.json"
+                    if ($payload.url) {
+                        $url = [string]$payload.url
+                        $fileName = if ($payload.file) { [string]$payload.file } else { [System.IO.Path]::GetFileName(($url -split '\?')[0]) }
+                        if ($fileName -notmatch '\.gguf$') { throw "Model file must be a .gguf." }
+                        Start-ShadowBackgroundDownload -Url $url -Dest (Join-Path $modelsDir $fileName) -StatusPath $statusPath
+                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; file = $fileName }) 200
+                        continue
+                    }
+                    $repo = [string]$payload.repo
+                    if (-not $repo) { throw "Provide { url }, { repo, file }, or { repo, quant }." }
+                    $files = @()
+                    if ($payload.file) { $files = @([string]$payload.file) }
+                    elseif ($payload.quant) { $files = @(Resolve-ShadowGgufFiles -Repo $repo -Quant ([string]$payload.quant)) }
+                    else { throw "Provide a file or quant." }
+                    if ($files.Count -eq 0) { throw "No matching .gguf file found in '$repo'." }
+                    foreach ($f in $files) { if ($f -notmatch '\.gguf$') { throw "Resolved file is not a .gguf: $f" } }
+                    # The selectable/loadable model is the first split part (llama.cpp loads the rest) or the single file.
+                    $primary = ($files | Where-Object { $_ -match '00001-of-' } | Select-Object -First 1)
+                    if (-not $primary) { $primary = $files[0] }
+                    $downloader = Ensure-ShadowModelDownloadScript
+                    @{ state = "starting"; fileCount = $files.Count } | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath $statusPath
+                    $psArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $downloader, "-Repo", $repo, "-Files", ($files -join ','), "-DestDir", $modelsDir, "-StatusPath", $statusPath)
+                    Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -WindowStyle Hidden | Out-Null
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; file = $primary; parts = $files.Count }) 200
+                } catch {
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = $_.Exception.Message }) 200
+                }
+                continue
+            }
+            if ($urlPath -eq "/api/llamacpp/models/download-status") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                $st = Read-ShadowJsonFile (Join-Path (Get-ShadowLlamacppDir) "model-download-status.json")
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; download = $st }) 200
+                continue
+            }
+            if ($urlPath -eq "/api/llamacpp/hf-search") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                $q = $request.QueryString["q"]
+                if ([string]::IsNullOrWhiteSpace($q)) { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; results = @() }) 200; continue }
+                try {
+                    $headers = @{ "User-Agent" = "ShadowAI-llamacpp" }
+                    $uri = "https://huggingface.co/api/models?search=$([uri]::EscapeDataString($q))&filter=gguf&sort=downloads&direction=-1&limit=30"
+                    $found = Invoke-RestMethod -Uri $uri -Headers $headers -TimeoutSec 15
+                    $results = @($found | ForEach-Object { [PSCustomObject]@{ repo = [string]$_.id; downloads = [long]$_.downloads; likes = [long]$_.likes } })
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; results = $results }) 200
+                } catch {
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = $_.Exception.Message; results = @() }) 200
+                }
+                continue
+            }
+            if ($urlPath -eq "/api/llamacpp/model-size") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                $repo = $request.QueryString["repo"]
+                $quant = $request.QueryString["quant"]
+                if ([string]::IsNullOrWhiteSpace($quant)) { $quant = "Q4_K_M" }
+                if ([string]::IsNullOrWhiteSpace($repo)) { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Missing repo." }) 400; continue }
+                try {
+                    $info = Get-ShadowGgufSizeInfo -Repo $repo -Quant $quant
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; bytes = $info.bytes; parts = $info.parts }) 200
+                } catch {
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = $_.Exception.Message; bytes = 0; parts = 0 }) 200
+                }
+                continue
+            }
+            if ($urlPath -eq "/api/llamacpp/check-update") {
+                if ($request.HttpMethod -ne "GET") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                $buildFile = Join-Path (Get-ShadowLlamacppDir) "build.txt"
+                $installed = ""
+                if (Test-Path $buildFile) { $installed = ((Get-Content $buildFile -Raw -ErrorAction SilentlyContinue) + "").Trim() }
+                $latest = ""
+                try {
+                    $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" -Headers @{ "User-Agent" = "ShadowAI-llamacpp" } -TimeoutSec 12
+                    $latest = [string]$rel.tag_name
+                } catch {}
+                $exe = Get-ShadowLlamacppServerExe
+                $updateAvailable = ([bool]$exe -and $installed -and $latest -and ($installed -ne $latest))
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; installed = $installed; latest = $latest; updateAvailable = $updateAvailable }) 200
+                continue
+            }
+            if ($urlPath -eq "/api/llamacpp/models/delete") {
+                if ($request.HttpMethod -ne "POST") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                try {
+                    $reader = New-Object System.IO.StreamReader($request.InputStream)
+                    $payload = $reader.ReadToEnd() | ConvertFrom-Json
+                    $name = [string]$payload.name
+                    if ($name -notmatch '\.gguf$' -or $name -match '[\\/]') { throw "Invalid model name." }
+                    $target = Join-Path (Get-ShadowLlamacppModelsDir) $name
+                    if (Test-Path $target) { Remove-Item -LiteralPath $target -Force }
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; models = (Get-ShadowLlamacppModels) }) 200
+                } catch {
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = $_.Exception.Message }) 200
+                }
+                continue
+            }
+            if ($urlPath -eq "/api/llamacpp/start") {
+                if ($request.HttpMethod -ne "POST") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                try {
+                    $reader = New-Object System.IO.StreamReader($request.InputStream)
+                    $payload = $reader.ReadToEnd() | ConvertFrom-Json
+                    $model = [string]$payload.model
+                    $ctx = if ($payload.ctx) { [int]$payload.ctx } else { 16384 }
+                    if ($ctx -lt 512) { $ctx = 512 }
+                    $ncmoe = if ($payload.ncmoe) { [int]$payload.ncmoe } else { 0 }
+                    if ($model -notmatch '\.gguf$' -or $model -match '[\\/]') { throw "Invalid model name." }
+                    $modelPath = Join-Path (Get-ShadowLlamacppModelsDir) $model
+                    if (-not (Test-Path $modelPath)) { throw "Model '$model' not found. Download it first." }
+                    $exe = Get-ShadowLlamacppServerExe
+                    if (-not $exe) { throw "llama.cpp is not installed. Install the binary first." }
+                    # Stop any existing managed server before starting a new one.
+                    $existing = Get-ShadowLlamacppServerState
+                    if ($existing) { try { Stop-Process -Id $existing.pid -Force -ErrorAction SilentlyContinue } catch {} }
+                    $llamaPort = 8099
+                    while (Get-NetTCPConnection -LocalPort $llamaPort -State Listen -ErrorAction SilentlyContinue) { $llamaPort++ }
+                    $backend = Get-ShadowLlamacppBackend
+                    $ngl = if ($backend -eq "cpu") { "0" } else { "999" }
+                    # -ngl 999 puts all layers on the GPU ("fit all"). For MoE models that don't fit,
+                    # --n-cpu-moe N keeps the expert (FFN) weights of N layers in CPU RAM while attention
+                    # stays on GPU; --cpu-moe keeps all experts on CPU. The frontend raises N until the
+                    # model loads without an out-of-memory crash, getting the most out of the GPU.
+                    # --parallel 1: give the FULL context to a single slot (concurrent subagents queue
+                    #   instead of splitting the context and overflowing the large subagent prompt).
+                    # --jinja: use the model's chat template so tool/function calling works.
+                    $srvArgs = @("--model", $modelPath, "--host", "127.0.0.1", "--port", "$llamaPort", "--ctx-size", "$ctx", "-ngl", $ngl, "--parallel", "1", "--jinja")
+                    if ($backend -ne "cpu") {
+                        if ($ncmoe -ge 9999) { $srvArgs += "--cpu-moe" }
+                        elseif ($ncmoe -gt 0) { $srvArgs += @("--n-cpu-moe", "$ncmoe") }
+                    }
+                    $outLog = Join-Path (Get-ShadowLlamacppDir) "server.log"
+                    $errLog = Join-Path (Get-ShadowLlamacppDir) "server-err.log"
+                    $proc = Start-Process -FilePath $exe -ArgumentList $srvArgs -WorkingDirectory (Get-ShadowLlamacppBinDir) -NoNewWindow -PassThru -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+                    @{ pid = $proc.Id; port = $llamaPort; model = $model; ctx = $ctx; startedAt = ([DateTimeOffset]::UtcNow.ToString("o")) } | ConvertTo-Json -Compress | Set-Content -Encoding utf8 -LiteralPath (Get-ShadowLlamacppServerStatusPath)
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; port = $llamaPort; model = $model; ctx = $ctx; baseUrl = "http://127.0.0.1:$llamaPort/v1" }) 200
+                } catch {
+                    Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = $_.Exception.Message }) 200
+                }
+                continue
+            }
+            if ($urlPath -eq "/api/llamacpp/stop") {
+                if ($request.HttpMethod -ne "POST") { Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405; continue }
+                $existing = Get-ShadowLlamacppServerState
+                if ($existing) { try { Stop-Process -Id $existing.pid -Force -ErrorAction SilentlyContinue } catch {} }
+                Remove-Item -LiteralPath (Get-ShadowLlamacppServerStatusPath) -Force -ErrorAction SilentlyContinue
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success" }) 200
                 continue
             }
 

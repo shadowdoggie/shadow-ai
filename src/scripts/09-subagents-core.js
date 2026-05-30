@@ -622,7 +622,7 @@ function getSubagentFinishReadiness(task, finalStatus, verification, subagentRec
   // Local models (LM Studio / custom endpoints) are weak at producing a separate verification
   // step; accept any successful tool action as sufficient evidence so simple tasks can actually
   // finish instead of looping (and growing the prompt past their context).
-  if (subagentRecord && (subagentRecord.provider === 'lmstudio_local' || subagentRecord.provider === 'custom_openai') && (Number(subagentRecord.successfulToolCount) || 0) > 0) {
+  if (subagentRecord && (subagentRecord.provider === 'lmstudio_local' || subagentRecord.provider === 'custom_openai' || subagentRecord.provider === 'llamacpp_builtin') && (Number(subagentRecord.successfulToolCount) || 0) > 0) {
     return { ok: true, reason: '', evidence: getSubagentEvidenceSummary(subagentRecord, 6) };
   }
   if (!isEvidenceRequiredForSubagentSuccess(task)) return { ok: true, reason: '' };
@@ -1466,6 +1466,7 @@ function failSubagentRecord(subagentRecord, reason) {
   appendSubagentTimelineEvent(subagentRecord, 'failed', reason);
   persistSubagentRunSummary(subagentRecord);
   updateSubagentIndicator();
+  if (typeof scheduleLlamacppIdleStop === 'function') scheduleLlamacppIdleStop();
 }
 
 function completeSubagentRecord(subagentRecord, summary) {
@@ -1477,6 +1478,7 @@ function completeSubagentRecord(subagentRecord, summary) {
   appendSubagentTimelineEvent(subagentRecord, 'completed', summary);
   persistSubagentRunSummary(subagentRecord);
   updateSubagentIndicator();
+  if (typeof scheduleLlamacppIdleStop === 'function') scheduleLlamacppIdleStop();
 }
 
 function partialSubagentRecord(subagentRecord, summary, reason) {
@@ -1489,6 +1491,7 @@ function partialSubagentRecord(subagentRecord, summary, reason) {
   appendSubagentTimelineEvent(subagentRecord, 'partial', reason);
   persistSubagentRunSummary(subagentRecord);
   updateSubagentIndicator();
+  if (typeof scheduleLlamacppIdleStop === 'function') scheduleLlamacppIdleStop();
 }
 
 function subagentSleep(ms, subagentRecord) {

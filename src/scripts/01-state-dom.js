@@ -185,6 +185,12 @@ let moonshotApiKey = localStorage.getItem('shadow_moonshot_key') || '';
 let lmstudioEndpoint = localStorage.getItem('shadow_lmstudio_endpoint') || 'http://localhost:1234/v1';
 let customEndpoint = localStorage.getItem('shadow_custom_endpoint') || '';
 let customApiKey = localStorage.getItem('shadow_custom_api_key') || '';
+// Built-in llama.cpp: base URL of the running managed server (set from /api/llamacpp/status),
+// the detected GPU backend, and the loaded model. Not persisted — derived from the live server.
+let llamacppBuiltinBase = '';
+let llamacppBackend = '';
+let llamacppServerModel = '';
+let llamacppContextSize = parseInt(localStorage.getItem('shadow_llamacpp_ctx') || '16384', 10) || 16384;
 
 let ollamaApiKey = localStorage.getItem('shadow_ollama_key') || '';
 let searxngSearchUrl = localStorage.getItem('shadow_searxng_url') || 'http://127.0.0.1/search';
@@ -871,6 +877,28 @@ const inputCustomApiKey = document.getElementById('input-custom-api-key');
 const inputCustomModel = document.getElementById('input-custom-model');
 const btnRefreshCustomModels = document.getElementById('btn-refresh-custom-models');
 const customStatus = document.getElementById('custom-status');
+// Built-in llama.cpp manager controls
+const groupLlamacppBuiltinSettings = document.getElementById('group-llamacpp-builtin-settings');
+const llamacppBackendBadge = document.getElementById('llamacpp-backend-badge');
+const btnLlamacppInstall = document.getElementById('btn-llamacpp-install');
+const llamacppBinaryStatus = document.getElementById('llamacpp-binary-status');
+const inputLlamacppRepo = document.getElementById('input-llamacpp-repo');
+const inputLlamacppFile = document.getElementById('input-llamacpp-file');
+const btnLlamacppDownload = document.getElementById('btn-llamacpp-download');
+const btnLlamacppDownloadManual = document.getElementById('btn-llamacpp-download-manual');
+const llamacppDownloadStatus = document.getElementById('llamacpp-download-status');
+const selectLlamacppCatalog = document.getElementById('select-llamacpp-catalog');
+const selectLlamacppQuant = document.getElementById('select-llamacpp-quant');
+const llamacppCatalogNote = document.getElementById('llamacpp-catalog-note');
+const inputLlamacppSearch = document.getElementById('input-llamacpp-search');
+const btnLlamacppSearch = document.getElementById('btn-llamacpp-search');
+const selectLlamacppSearchResults = document.getElementById('select-llamacpp-search-results');
+const selectLlamacppModel = document.getElementById('select-llamacpp-model');
+const btnLlamacppDeleteModel = document.getElementById('btn-llamacpp-delete-model');
+const inputLlamacppCtx = document.getElementById('input-llamacpp-ctx');
+const btnLlamacppStart = document.getElementById('btn-llamacpp-start');
+const btnLlamacppStop = document.getElementById('btn-llamacpp-stop');
+const llamacppServerStatus = document.getElementById('llamacpp-server-status');
 const inputMemoryBackupEnabled = document.getElementById('input-memory-backup-enabled');
 const selectMemoryBackupInterval = document.getElementById('select-memory-backup-interval');
 const inputMemoryBackupCustomMinutes = document.getElementById('input-memory-backup-custom-minutes');

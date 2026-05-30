@@ -68,8 +68,13 @@ No promises or timelines, but here's where my head's at right now:
   > Local **Ollama** was removed in v1.5.0: on consumer GPUs it offloads large models to CPU and
   > runs unusably slowly (idling the GPU at ~20 W), which Shadow can't control from its side —
   > the same models run well via LM Studio. **Ollama Cloud** stays.
-- **Built-in llama.cpp — next.** A bundled local model server with a download / model-manager UI
-  (auto-listing available models), usable as a subagent provider and — later — the local voice brain.
+- **Built-in llama.cpp — ✅ shipped (v1.6.0).** Shadow downloads and runs a local **llama.cpp**
+  server for you (no separate install): auto-detects your GPU build (CUDA / Vulkan / CPU) and
+  auto-updates the binary, a curated picklist of current GGUF models (plus Hugging Face search)
+  with one-click download and real sizes, big split-model support, and MoE expert-offload so
+  large mixture-of-experts models fit on consumer GPUs. The server auto-starts when a subagent
+  runs and unloads from VRAM when idle. Usable as a subagent provider now, and the local voice
+  brain later.
 - **Local voice model — planned.** A fully local realtime path (Parakeet STT → local LLM brain →
   Qwen3 TTS) as an optional alternative to Gemini Live.
 - **Local TTS — eventually.** **Qwen3-TTS** as the fully-local text-to-speech option.
