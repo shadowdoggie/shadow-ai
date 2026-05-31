@@ -38,7 +38,8 @@ const COMPACT_LIVE_BASE_SYSTEM_INSTRUCTION =
   'Settings lock: do not change main voice preset, favorite voices, Live model, Live reasoning level, Subagent Prompt Brain, subagent provider/model/reasoning, or proactive profile by voice/tool call. Those are settings UI controls. update_shadow_settings may change assistant name, accent, echo gate, and SearXNG settings only when explicitly requested.\n\n' +
   'Scheduler/reminders: use run_powershell_command against http://127.0.0.1:9333/api/tasks. Create with POST and a JSON body whose fields are exactly {type, message, schedule} — e.g. (@{type="reminder"; message="Call the dentist"; schedule="in 5 minutes"} | ConvertTo-Json -Compress). The field names are MESSAGE and SCHEDULE, never "task" or "due". Use cronExpression (e.g. "every 30 minutes") instead of schedule for recurring tasks. List active tasks with GET /api/tasks?activeOnly=true; edit with POST /api/tasks/{id}/edit (body {message, schedule}); delete with DELETE /api/tasks/{id}. Report the humanTime/timeFromNow fields exactly from the API output.\n\n' +
   'PowerShell safety: quote paths, use Start-Process for GUI apps/URLs, prefer read_file/list_directory for reads, check files before destructive operations, never trigger native file pickers, and keep Shadow self-edits scoped and verified.\n\n' +
-  'Memory: automatically store durable user facts with memory tools, but never store transient file paths or one-off task state. Double-check facts before adding them.';
+  'Memory: automatically store durable user facts with memory tools, but never store transient file paths or one-off task state. Double-check facts before adding them.\n\n' +
+  'Conversation vs memory (be honest): your long-term memory is a set of FACTS about the user, NOT a record of what you were just talking about. "What were we talking about?", "what did we just discuss?", or "continue from before" refer ONLY to the recent conversation in context. If there is no recent conversation available (e.g. the app was just restarted, updated, or reconnected), say so plainly — that you do not have the earlier conversation in front of you and they should remind you. NEVER fabricate a past topic or recite memory facts as if they were the recent chat.';
 
 function syncMemoryGraphAssistantLabels(root = document) {
   const assistantLabel = typeof getAssistantName === 'function' ? getAssistantName() : 'Shadow';
@@ -465,7 +466,13 @@ function buildRecentConversationHistoryText(maxChars = RECENT_HISTORY_PROMPT_BUD
       .join('\n');
   }
 
-  if (!conversationHistory) return '';
+  if (!conversationHistory) {
+    // No earlier dialogue is available (fresh launch, or a reconnect/update that couldn't restore it).
+    // Say so EXPLICITLY so the model is honest about it instead of silently inventing a past topic or
+    // reciting long-term memory facts as if they were the recent conversation.
+    return '\n\n=== RECENT CONVERSATION HISTORY (FOR CONTEXT) ===\n' +
+      'No earlier conversation is available for this session — the app was just launched or reconnected, or prior turns could not be restored. If the user asks what you were talking about, what you were just discussing, or to pick up from before, be honest and brief: say you do not have that earlier conversation in front of you and ask them to remind you. Do NOT guess or invent a previous topic, and do NOT use long-term memory facts as if they were the recent conversation.\n';
+  }
   let text = '\n\n=== RECENT CONVERSATION HISTORY (FOR CONTEXT) ===\n';
   text += 'The following is the recent dialog before this connection/reconnection. Use it to maintain continuity. Treat it as background context, not as a new user message to answer again:\n';
   text += conversationHistory + '\n';
@@ -543,11 +550,17 @@ async function maybeInjectRelevantMemoryRecall(userText) {
       .filter(item => item.score > 0)
       .sort((a, b) => b.score - a.score || getMemoryPriority(a.node) - getMemoryPriority(b.node))
       .slice(0, 10);
-    const nodes = scored.length > 0 ? scored.map(item => item.node) : orderMemoryNodesForPrompt(graph.nodes || []).slice(0, 12);
+    // Only inject TARGETED recall when memories actually MATCH the question. Previously a zero-score
+    // query (e.g. "what were we talking about?") fell back to dumping the top 12 memories with "use these
+    // before answering" — which made the model recite random long-term facts as if they were the recent
+    // conversation. The always-present long-term-memory section already gives general background, so when
+    // nothing matches we inject nothing here.
+    if (scored.length === 0) return;
+    const nodes = scored.map(item => item.node);
     if (nodes.length === 0) return;
 
     const recall = nodes.map(formatMemoryNodeLine).join('\n').substring(0, 2200);
-    queueSchedulerMessage(`[SYSTEM MEMORY RECALL for the user's current question: "${String(userText).substring(0, 180)}"]\nUse these memories before answering. If the exact asked fact is not present, say you do not have that specific memory; do not guess.\n${recall}`, {
+    queueSchedulerMessage(`[SYSTEM MEMORY RECALL for the user's current question: "${String(userText).substring(0, 180)}"]\nThese are long-term memory FACTS that match the question — they are NOT a transcript of your recent conversation. Use them to answer the specific question. If the exact asked fact is not present, say you do not have that specific memory; do not guess, and never present these as "what we were talking about".\n${recall}`, {
       lane: 'memory',
       dedupeKey: `memory:${key}`
     });

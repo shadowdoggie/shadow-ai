@@ -85,11 +85,8 @@ function normalizeLiveModel(model) {
 }
 
 function normalizeLiveThinkingLevel(level) {
-  // Voice reasoning is HARDCODED to 'minimal' (the selector was removed). Higher levels produced long
-  // silent "thinking" pauses that stalled long conversations, and the live model behaves best at minimal
-  // here. Every value — saved by an existing user, migrated, or passed in — collapses to 'minimal', so
-  // every install (new or upgraded) runs minimal regardless of any previously chosen level.
-  return 'minimal';
+  const normalized = String(level || '').trim().toLowerCase();
+  return LIVE_THINKING_LEVELS.has(normalized) ? normalized : DEFAULT_LIVE_THINKING_LEVEL;
 }
 
 function migrateLiveThinkingDefault(level) {
@@ -106,12 +103,11 @@ function supportsLiveThinkingLevel(model) {
   return /^models\/gemini-3(?:\.|\b|-)/i.test(String(model || ''));
 }
 
-function getLiveGenerationThinkingConfig(model) {
-  // Hardcoded to 'minimal' for supported Gemini 3 Live models; fallback (2.5 native audio) gets none.
-  // This is the single chokepoint that builds the setup message's thinkingConfig, so pinning it here
-  // guarantees minimal for every user no matter what is stored in config.json / localStorage.
-  if (!supportsLiveThinkingLevel(model)) return null;
-  return { thinkingLevel: 'minimal' };
+function getLiveGenerationThinkingConfig(model, level = liveThinkingLevel) {
+  // Honors the user's selected voice reasoning level; defaults to 'minimal' (fastest/most responsive).
+  const normalized = normalizeLiveThinkingLevel(level);
+  if (normalized === 'auto' || !supportsLiveThinkingLevel(model)) return null;
+  return { thinkingLevel: normalized };
 }
 
 function getSmartConsultWorkRoutingReason(prompt) {
@@ -383,6 +379,11 @@ function formatCommandOutputNotice(output) {
 let userInitiatedDisconnect = false;
 let watchdogBackoffMs = 2000;
 const maxWatchdogBackoffMs = 30000;
+// Diagnostics for the long-call slowdown: track when the live session connected and the last logged
+// context-size bucket, so we can watch (in the console) whether the sliding-window compression is
+// actually keeping the rolling context bounded over a long conversation.
+let liveSessionConnectedAt = 0;
+let lastLoggedContextTokenBucket = -1;
 let watchdogTimer = null;
 const TRANSIENT_SOCKET_CLOSE_CODES = new Set([1001, 1006, 1007, 1011, 1012, 1013, 1014]);
 

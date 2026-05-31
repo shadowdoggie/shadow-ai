@@ -688,6 +688,8 @@ async function connect() {
     isConnected = true;
     userInitiatedDisconnect = false;
     watchdogBackoffMs = 2000;
+    liveSessionConnectedAt = Date.now();
+    lastLoggedContextTokenBucket = -1;
     clearTimeout(watchdogTimer);
     watchdogTimer = null;
     updateSessionButtonVisibility();
@@ -1362,8 +1364,17 @@ async function connect() {
         // default context/duration cap and dropping (the main cause of the periodic
         // code-1006 disconnects). It lets the session run much longer; the resumption
         // handle still covers any genuine network blip.
+        //
+        // EXPLICIT BOUNDS (latency): without a triggerTokens, compression only fires near the model's
+        // full (huge) context limit, so a long call accumulates more and more context — and since session
+        // resumption preserves that context across reconnects, every reply gets slower the longer you talk.
+        // Compress once the rolling context passes ~32k tokens, back down to ~16k. That keeps several
+        // minutes of recent conversation for continuity (durable facts live in long-term memory regardless)
+        // while keeping replies snappy. Tunable: raise if it forgets recent context too soon, lower if long
+        // calls still slow down.
         contextWindowCompression: {
-          slidingWindow: {}
+          triggerTokens: 32000,
+          slidingWindow: { targetTokens: 16000 }
         }
       }
     };
@@ -1377,8 +1388,13 @@ async function connect() {
     if (activeResumptionToken) {
       setupMessage.setup.sessionResumption.handle = activeResumptionToken;
       addSystemMessage('Resuming previous conversation context...');
+      console.log('[Live] Reconnecting WITH a session-resumption handle — prior conversation context is preserved by the server.');
     } else if (recentDialogueTurns.length > 0) {
       addSystemMessage('Restoring recent conversation context...');
+      // This is the "forgot everything" case: a reconnect with NO server handle, so the live context is
+      // gone and only a small recent-dialogue snippet is re-injected into the prompt. Make it loud so we
+      // can tell from the console whether a context-loss complaint was a real fresh-session reconnect.
+      console.warn(`[Live] Reconnecting WITHOUT a session-resumption handle — the server is NOT preserving prior live context; only the recent-dialogue snippet (~${RECENT_HISTORY_PROMPT_BUDGET_CHARS} chars) is re-injected. If it seems to "forget" the conversation after a reconnect, this log is why.`);
     }
 
     try {
@@ -2130,6 +2146,20 @@ async function connect() {
           disconnect('Could not access the microphone. Check Windows Settings → Privacy & security → Microphone (make sure microphone access + desktop-app access are on) and that a mic is connected, then reconnect.');
         }
         return;
+      }
+
+      // Context-size diagnostic: the server reports the rolling token count in usageMetadata. Log it when
+      // it crosses a 4k bucket so we can SEE, over a long call, whether the sliding-window compression
+      // (trigger ~32k / target ~16k) is actually holding context bounded — i.e. whether replies should
+      // stay fast. If this climbs past ~40-50k and keeps rising, the bound isn't holding and we tune it.
+      if (response.usageMetadata && typeof response.usageMetadata.totalTokenCount === 'number') {
+        const totalTokens = response.usageMetadata.totalTokenCount;
+        const bucket = Math.floor(totalTokens / 4000);
+        if (bucket !== lastLoggedContextTokenBucket) {
+          lastLoggedContextTokenBucket = bucket;
+          const ageSec = liveSessionConnectedAt ? Math.round((Date.now() - liveSessionConnectedAt) / 1000) : 0;
+          console.log(`[Live] Context ~${totalTokens} tokens (session age ${ageSec}s). Compression trigger ~32k / target ~16k — this should plateau, not keep climbing.`);
+        }
       }
 
       if (response.serverContent) {

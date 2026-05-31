@@ -259,7 +259,7 @@ describe('voice setting session behavior', () => {
     expect(normalizeLiveModel('models/unknown-live-model')).toBe(DEFAULT_LIVE_MODEL);
   });
 
-  it('hardcodes Gemini 3 Live thinking to minimal regardless of input', () => {
+  it('normalizes voice reasoning levels and defaults to minimal', () => {
     const {
       DEFAULT_LIVE_MODEL,
       FALLBACK_LIVE_MODEL,
@@ -272,26 +272,23 @@ describe('voice setting session behavior', () => {
 
     expect(liveThinkingLevel).toBe('minimal');
     expect(getStoredThinkingLevel()).toBe('minimal');
-    // The selector was removed; every input collapses to minimal.
-    expect(normalizeLiveThinkingLevel('LOW')).toBe('minimal');
-    expect(normalizeLiveThinkingLevel('high')).toBe('minimal');
+    // Selector is back: known levels are honored, unknown input falls back to the minimal default.
+    expect(normalizeLiveThinkingLevel('LOW')).toBe('low');
+    expect(normalizeLiveThinkingLevel('high')).toBe('high');
     expect(normalizeLiveThinkingLevel('bad')).toBe('minimal');
     expect(supportsLiveThinkingLevel(DEFAULT_LIVE_MODEL)).toBe(true);
     expect(supportsLiveThinkingLevel(FALLBACK_LIVE_MODEL)).toBe(false);
-    // Supported Gemini 3 models always get minimal; fallback (2.5 native audio) gets none.
-    expect(getLiveGenerationThinkingConfig(DEFAULT_LIVE_MODEL, 'high')).toEqual({ thinkingLevel: 'minimal' });
-    expect(getLiveGenerationThinkingConfig(DEFAULT_LIVE_MODEL)).toEqual({ thinkingLevel: 'minimal' });
+    expect(getLiveGenerationThinkingConfig(DEFAULT_LIVE_MODEL, 'high')).toEqual({ thinkingLevel: 'high' });
+    expect(getLiveGenerationThinkingConfig(DEFAULT_LIVE_MODEL, 'auto')).toBe(null);
     expect(getLiveGenerationThinkingConfig(FALLBACK_LIVE_MODEL, 'high')).toBe(null);
   });
 
-  it('forces any previously-saved voice reasoning level (high/low/medium) to minimal on every install', () => {
+  it('migrates legacy default voice reasoning levels (high/low) to the current default (minimal)', () => {
     const fromHigh = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'high');
     expect(fromHigh.liveThinkingLevel).toBe('minimal');
-    expect(fromHigh.getStoredThinkingLevel()).toBe('minimal');
 
-    const fromMedium = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'medium');
-    expect(fromMedium.liveThinkingLevel).toBe('minimal');
-    expect(fromMedium.getStoredThinkingLevel()).toBe('minimal');
+    const fromLow = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'low');
+    expect(fromLow.liveThinkingLevel).toBe('minimal');
   });
 
   it('routes executable work away from foreground smart consults', () => {
@@ -400,13 +397,13 @@ describe('voice setting session behavior', () => {
     expect(refused.assumed_success).not.toBe(true);
   });
 
-  it('offers Gemini 3.1 Flash Live and the 2.5 fallback in settings (voice reasoning selector removed)', () => {
+  it('offers Gemini 3.1 Flash Live, the 2.5 fallback, and the voice reasoning selector in settings', () => {
     const indexHtml = fs.readFileSync(path.join(process.cwd(), 'src', 'index.html'), 'utf8');
 
     expect(indexHtml).toContain('models/gemini-3.1-flash-live-preview');
     expect(indexHtml).toContain('models/gemini-2.5-flash-native-audio-preview-12-2025');
-    // Voice reasoning is hardcoded to minimal now; the selector dropdown must be gone.
-    expect(indexHtml).not.toContain('select-live-thinking-level');
+    // Selector is back (defaulting to minimal).
+    expect(indexHtml).toContain('select-live-thinking-level');
     expect(indexHtml).toContain('input-smart-main-routing-enabled');
     expect(indexHtml).toContain('input-assistant-name');
     expect(indexHtml).toContain('Subagent Prompt Brain');
@@ -657,10 +654,12 @@ describe('voice setting session behavior', () => {
     expect(liveConnection).toContain('generationConfig.thinkingConfig');
     expect(liveConnection).toContain('setupMessage.setup.sessionResumption.handle');
     expect(liveConnection).not.toContain('setupMessage.config');
-    // Sliding-window context compression keeps the session from hitting the duration cap
-    // and dropping (the main cause of periodic 1006 disconnects).
+    // Sliding-window context compression keeps the session from hitting the duration cap and dropping
+    // (the main cause of periodic 1006 disconnects), now with explicit token bounds so latency stays
+    // flat over long calls instead of growing with accumulated context.
     expect(liveConnection).toContain('contextWindowCompression');
-    expect(liveConnection).toContain('slidingWindow: {}');
+    expect(liveConnection).toContain('triggerTokens');
+    expect(liveConnection).toContain('slidingWindow: { targetTokens:');
   });
 
   it('guards Live tool responses against stale sockets', async () => {

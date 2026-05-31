@@ -248,8 +248,18 @@
           </select>
         </div>
 
-        <!-- Voice reasoning is hardcoded to Minimal (fastest, most responsive). The selector was removed
-             because higher levels caused long silent thinking pauses that stalled long conversations. -->
+        <!-- Live Reasoning Selection -->
+        <div class="form-group">
+          <label for="select-live-thinking-level">Voice Reasoning</label>
+          <select id="select-live-thinking-level">
+            <option value="minimal" selected>Minimal (Fastest)</option>
+            <option value="low">Low (Faster)</option>
+            <option value="medium">Medium (Balanced)</option>
+            <option value="high">High (Smartest)</option>
+            <option value="auto">Auto (Provider Default)</option>
+          </select>
+          <span class="field-hint" style="display:block;margin-top:4px;">Minimal is fastest and most responsive — recommended for snappy voice. Higher levels are smarter but slower per reply and may refuse more; lean on background subagents for heavy planning/research.</span>
+        </div>
 
         <div class="form-group">
           <label>Subagent Prompt Brain</label>
