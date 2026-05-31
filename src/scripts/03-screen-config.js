@@ -114,12 +114,17 @@ function getNormalizedProactiveProfile(value = proactiveProfile) {
     cinematic: 'immersive',
     max: 'immersive',
     maximum: 'immersive',
-    '20x': 'insane',
-    twentyx: 'insane',
-    'twenty times': 'insane',
-    '50x': 'overdrive',
-    fiftyx: 'overdrive',
-    'fifty times': 'overdrive',
+    // 20x/50x (insane/overdrive) were removed: their sub-second eval cadence was below the cloud
+    // evaluator's round-trip time, so they only produced 429 rate-limit backoff and erratic behavior.
+    // Migrate any saved value (and the old internal names) to the new top mode, unhinged (5x).
+    '20x': 'unhinged',
+    twentyx: 'unhinged',
+    'twenty times': 'unhinged',
+    insane: 'unhinged',
+    '50x': 'unhinged',
+    fiftyx: 'unhinged',
+    'fifty times': 'unhinged',
+    overdrive: 'unhinged',
     chatty: 'lively'
   };
   const normalized = aliases[profile] || profile;

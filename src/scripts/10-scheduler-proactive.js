@@ -199,7 +199,7 @@ function getNoScreenPresenceScore(triggerReason, contextSignal, config) {
   if (hasProactiveTextContext()) {
     return Math.max(config.minContextScore, Number(contextSignal?.score) || 1);
   }
-  if (isProactiveProfileAtLeast(proactiveProfile, 'insane')) {
+  if (isProactiveProfileAtLeast(proactiveProfile, 'unhinged')) {
     return Math.max(config.minContextScore, 1);
   }
   return 0;
@@ -362,11 +362,8 @@ function getProactiveEvaluatorProfileGuidance(config) {
   if (config.label === 'immersive') {
     return 'Immersive profile: be highly present. For movie/shared-screen moments and active conversations, react often to concrete context; without screen sharing, keep the conversation alive from recent dialogue.';
   }
-  if (config.label === 'insane') {
-    return 'Insane profile: the user explicitly asked for 20x presence right now. Evaluate constantly, speak on small but real openings, and still keep each message short and context-grounded.';
-  }
-  if (config.label === 'overdrive') {
-    return 'Overdrive profile: the user explicitly asked for 50x presence right now. Evaluate almost continuously, speak on tiny but real openings, and keep each message short and context-grounded.';
+  if (config.label === 'unhinged') {
+    return 'Unhinged profile: the most present mode. Evaluate frequently and speak on small but real openings (recent dialogue, pauses, visible changes), while still keeping each message short and context-grounded.';
   }
   const assistantLabel = typeof getAssistantName === 'function' ? getAssistantName() : 'Shadow';
   return `Use the current profile to decide how present ${assistantLabel} should be.`;
@@ -399,7 +396,7 @@ Rules:
 - Do not claim research/background work is happening unless Active subagents is greater than 0 or the latest subagent status is running/waiting_auth.
 - Completed, partial, failed, and cancelled subagents are historical. Mention them only as finished history, never as work currently being done.
 - If screen sharing is active, react only to a clearly interesting, funny, surprising, or task-relevant visible moment.
-- If screen sharing is inactive, recent dialogue, an unresolved thread, or an emotionally fitting callback can be enough reason in engaged/lively/immersive/hyper/insane/overdrive modes.
+- If screen sharing is inactive, recent dialogue, an unresolved thread, or an emotionally fitting callback can be enough reason in engaged/lively/immersive/hyper/unhinged modes.
 - If this is an idle reflection, speak only if the thought directly connects to recent dialogue or visible context; in lively and higher modes, prefer speaking when recent dialogue exists.
 - Never speak only because time passed.
 - Do not ask generic check-in questions unless there is a strong contextual reason.
@@ -497,7 +494,7 @@ function buildLocalProactiveFallbackDecision(attentionContext = {}, err = null) 
     return { action: 'speak', message: 'I was still thinking about that thread with you.', reason: 'local fallback: no-screen recent dialogue' };
   }
 
-  if (!screenStream && isProactiveProfileAtLeast(proactiveProfile, 'insane') && ['session_ready', 'idle_reflection', 'deferred'].includes(trigger)) {
+  if (!screenStream && isProactiveProfileAtLeast(proactiveProfile, 'unhinged') && ['session_ready', 'idle_reflection', 'deferred'].includes(trigger)) {
     return { action: 'speak', message: "I'm here and staying actively with you.", reason: 'local fallback: no-screen extreme presence' };
   }
 
@@ -522,7 +519,7 @@ function shouldUseProactiveFallback(err, attentionContext = {}) {
   if (attentionContext.triggerReason === 'screen_started') return true;
   if (attentionContext.triggerReason === 'subagent_update') return true;
   if (!screenStream && hasProactiveTextContext() && isProactiveProfileAtLeast(proactiveProfile, 'lively')) return true;
-  if (!screenStream && isProactiveProfileAtLeast(proactiveProfile, 'insane')) return true;
+  if (!screenStream && isProactiveProfileAtLeast(proactiveProfile, 'unhinged')) return true;
   if (screenStream && isProactiveProfileAtLeast(proactiveProfile, 'lively')) return true;
   if (screenStream && isProactiveProfileAtLeast(proactiveProfile, 'engaged') && Number(attentionContext.mergedScore) >= 12) return true;
   return false;
@@ -662,7 +659,7 @@ function collectProactiveContextSignal() {
     if (idleHeartbeatDue && hasProactiveTextContext()) {
       reasons.push('no-screen dialogue heartbeat');
       score += Math.max(config.minContextScore, isProactiveProfileAtLeast(proactiveProfile, 'lively') ? 3 : 1);
-    } else if (idleHeartbeatDue && isProactiveProfileAtLeast(proactiveProfile, 'insane')) {
+    } else if (idleHeartbeatDue && isProactiveProfileAtLeast(proactiveProfile, 'unhinged')) {
       reasons.push('no-screen extreme presence heartbeat');
       score += Math.max(config.minContextScore, 1);
     }

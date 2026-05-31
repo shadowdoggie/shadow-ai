@@ -213,7 +213,7 @@ function shouldDelegateHeavyLocalProcessingCommand(command) {
   return /\b-i\b|\.mp4\b|\.mov\b|\.mkv\b|\.webm\b|\.avi\b|\.wav\b|\.mp3\b/.test(lower);
 }
 
-const proactiveProfileOrder = ['quiet', 'balanced', 'engaged', 'lively', 'immersive', 'hyper', 'unhinged', 'insane', 'overdrive'];
+const proactiveProfileOrder = ['quiet', 'balanced', 'engaged', 'lively', 'immersive', 'hyper', 'unhinged'];
 
 function isProactiveProfileAtLeast(profile, baseline) {
   const profileIndex = proactiveProfileOrder.indexOf(profile);
@@ -243,7 +243,7 @@ function getNoScreenPresenceScore({ profile = 'balanced', trigger = 'idle_reflec
   if (hasTextContext) {
     return Math.max(minContextScore, contextScore || 1);
   }
-  if (isProactiveProfileAtLeast(profile, 'insane')) {
+  if (isProactiveProfileAtLeast(profile, 'unhinged')) {
     return Math.max(minContextScore, 1);
   }
   return 0;
@@ -264,7 +264,7 @@ function getNoScreenHeartbeatSignal({ profile = 'balanced', hasTextContext = fal
       score: Math.max(minContextScore, isProactiveProfileAtLeast(profile, 'lively') ? 3 : 1)
     };
   }
-  if (isProactiveProfileAtLeast(profile, 'insane')) {
+  if (isProactiveProfileAtLeast(profile, 'unhinged')) {
     return { changed: true, score: Math.max(minContextScore, 1) };
   }
   return { changed: false, score: 0 };
@@ -273,7 +273,7 @@ function getNoScreenHeartbeatSignal({ profile = 'balanced', hasTextContext = fal
 function shouldUseNoScreenFallback({ profile = 'balanced', hasTextContext = false, transient = true }) {
   if (!transient) return false;
   if (hasTextContext && isProactiveProfileAtLeast(profile, 'lively')) return true;
-  if (isProactiveProfileAtLeast(profile, 'insane')) return true;
+  if (isProactiveProfileAtLeast(profile, 'unhinged')) return true;
   return false;
 }
 
@@ -685,23 +685,17 @@ describe('Proactive Attention Modes', () => {
     expect(isProactiveProfileAtLeast('balanced', 'engaged')).toBe(false);
   });
 
-  it('should rank insane above the earlier extreme profiles', () => {
-    expect(isProactiveProfileAtLeast('insane', 'unhinged')).toBe(true);
-    expect(isProactiveProfileAtLeast('insane', 'immersive')).toBe(true);
-    expect(isProactiveProfileAtLeast('unhinged', 'insane')).toBe(false);
-  });
-
-  it('should rank overdrive as the most active explicit profile', () => {
-    expect(isProactiveProfileAtLeast('overdrive', 'insane')).toBe(true);
-    expect(isProactiveProfileAtLeast('overdrive', 'immersive')).toBe(true);
-    expect(isProactiveProfileAtLeast('insane', 'overdrive')).toBe(false);
+  it('should rank unhinged as the most active profile', () => {
+    expect(isProactiveProfileAtLeast('unhinged', 'hyper')).toBe(true);
+    expect(isProactiveProfileAtLeast('unhinged', 'immersive')).toBe(true);
+    expect(isProactiveProfileAtLeast('hyper', 'unhinged')).toBe(false);
   });
 
   it('should let high proactive modes trigger screen-frame evaluation without a large pixel diff', () => {
     const minContextScore = 3;
     expect(getProactiveSignalScore('screen_frame', 'immersive', 0)).toBe(9);
-    expect(getProactiveSignalScore('screen_frame', 'insane', 0)).toBe(9);
-    expect(getProactiveSignalScore('screen_frame', 'overdrive', 0)).toBe(9);
+    expect(getProactiveSignalScore('screen_frame', 'hyper', 0)).toBe(9);
+    expect(getProactiveSignalScore('screen_frame', 'unhinged', 0)).toBe(9);
     expect(shouldEvaluateProactiveContext({
       contextChanged: false,
       signalScore: getProactiveSignalScore('screen_frame', 'immersive', 0),
@@ -710,11 +704,12 @@ describe('Proactive Attention Modes', () => {
     })).toBe(true);
   });
 
-  it('should expose the extreme profiles in settings UI', () => {
+  it('should no longer expose the removed 20x/50x profiles in settings UI', () => {
     const root = process.cwd();
     const indexHtml = fs.readFileSync(path.join(root, 'src', 'index.html'), 'utf8');
-    expect(indexHtml).toContain('value="insane"');
-    expect(indexHtml).toContain('value="overdrive"');
+    expect(indexHtml).toContain('value="unhinged"');
+    expect(indexHtml).not.toContain('value="insane"');
+    expect(indexHtml).not.toContain('value="overdrive"');
   });
 
   it('should block direct natural-language proactive settings changes', () => {
@@ -772,7 +767,7 @@ describe('Proactive Attention Modes', () => {
 
   it('should evaluate no-screen extreme presence even before dialogue exists', () => {
     const signal = getNoScreenHeartbeatSignal({
-      profile: 'overdrive',
+      profile: 'unhinged',
       hasTextContext: false,
       timeSinceLastCheck: 2000,
       idleReflectionAfterMs: 2400,
@@ -784,7 +779,7 @@ describe('Proactive Attention Modes', () => {
 
   it('should wake a clean no-screen extreme session without a prior screen event', () => {
     const noScreenPresenceScore = getNoScreenPresenceScore({
-      profile: 'overdrive',
+      profile: 'unhinged',
       trigger: 'session_ready',
       hasTextContext: false,
       minContextScore: 1
@@ -835,7 +830,7 @@ describe('Proactive Attention Modes', () => {
 
   it('should allow no-screen fallback for active profiles when the evaluator is transiently unavailable', () => {
     expect(shouldUseNoScreenFallback({ profile: 'lively', hasTextContext: true })).toBe(true);
-    expect(shouldUseNoScreenFallback({ profile: 'overdrive', hasTextContext: false })).toBe(true);
+    expect(shouldUseNoScreenFallback({ profile: 'unhinged', hasTextContext: false })).toBe(true);
     expect(shouldUseNoScreenFallback({ profile: 'balanced', hasTextContext: true })).toBe(false);
   });
 

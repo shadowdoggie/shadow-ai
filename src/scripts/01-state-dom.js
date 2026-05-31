@@ -70,7 +70,7 @@ const LEGACY_LIVE_MODEL_ALIASES = {
   'models/gemini-2.5-flash-native-audio-latest': DEFAULT_LIVE_MODEL,
   'models/gemini-2.5-flash-native-audio-preview-09-2025': FALLBACK_LIVE_MODEL
 };
-const DEFAULT_LIVE_THINKING_LEVEL = 'medium';
+const DEFAULT_LIVE_THINKING_LEVEL = 'minimal';
 const LIVE_THINKING_DEFAULT_MIGRATION_KEY = 'shadow_live_thinking_default_migrated_medium_20260530';
 const LIVE_THINKING_LEVELS = new Set(['auto', 'minimal', 'low', 'medium', 'high']);
 // Previous hardcoded defaults ('high' originally, then briefly 'low'). On a one-time
@@ -85,8 +85,11 @@ function normalizeLiveModel(model) {
 }
 
 function normalizeLiveThinkingLevel(level) {
-  const normalized = String(level || '').trim().toLowerCase();
-  return LIVE_THINKING_LEVELS.has(normalized) ? normalized : DEFAULT_LIVE_THINKING_LEVEL;
+  // Voice reasoning is HARDCODED to 'minimal' (the selector was removed). Higher levels produced long
+  // silent "thinking" pauses that stalled long conversations, and the live model behaves best at minimal
+  // here. Every value — saved by an existing user, migrated, or passed in — collapses to 'minimal', so
+  // every install (new or upgraded) runs minimal regardless of any previously chosen level.
+  return 'minimal';
 }
 
 function migrateLiveThinkingDefault(level) {
@@ -103,10 +106,12 @@ function supportsLiveThinkingLevel(model) {
   return /^models\/gemini-3(?:\.|\b|-)/i.test(String(model || ''));
 }
 
-function getLiveGenerationThinkingConfig(model, level = liveThinkingLevel) {
-  const normalized = normalizeLiveThinkingLevel(level);
-  if (normalized === 'auto' || !supportsLiveThinkingLevel(model)) return null;
-  return { thinkingLevel: normalized };
+function getLiveGenerationThinkingConfig(model) {
+  // Hardcoded to 'minimal' for supported Gemini 3 Live models; fallback (2.5 native audio) gets none.
+  // This is the single chokepoint that builds the setup message's thinkingConfig, so pinning it here
+  // guarantees minimal for every user no matter what is stored in config.json / localStorage.
+  if (!supportsLiveThinkingLevel(model)) return null;
+  return { thinkingLevel: 'minimal' };
 }
 
 function getSmartConsultWorkRoutingReason(prompt) {
@@ -333,35 +338,12 @@ const PROACTIVE_PROFILES = {
     minContextScore: 1,
     screenDiffThreshold: 1,
     description: 'five times as active as engaged, proceed with caution'
-  },
-  insane: {
-    label: 'insane',
-    minEvalGapMs: 600,
-    minSpeakGapMs: 1500,
-    idleReflectionAfterMs: 6 * 1000,
-    maxQuietMs: 21 * 1000,
-    eventDelayMs: [60, 400],
-    idleDelayMs: [3750, 12000],
-    minContextScore: 1,
-    screenDiffThreshold: 1,
-    minEventDelayMs: 120,
-    description: 'twenty times as active as engaged; only for explicit right-now use'
-  },
-  overdrive: {
-    label: 'overdrive',
-    minEvalGapMs: 240,
-    minSpeakGapMs: 600,
-    idleReflectionAfterMs: 2400,
-    maxQuietMs: 8400,
-    eventDelayMs: [24, 160],
-    idleDelayMs: [1500, 4800],
-    minContextScore: 1,
-    screenDiffThreshold: 1,
-    minEventDelayMs: 60,
-    description: 'fifty times as active as engaged; extreme right-now presence'
   }
+  // NOTE: 'insane' (20x) and 'overdrive' (50x) were removed. Their sub-second eval gaps fell below the
+  // cloud evaluator's round-trip latency, so they only triggered rate-limit backoff and erratic/silent
+  // behavior instead of higher presence. Saved 20x/50x settings migrate to 'unhinged' (see 03-screen-config).
 };
-const PROACTIVE_PROFILE_ORDER = ['quiet', 'balanced', 'engaged', 'lively', 'immersive', 'hyper', 'unhinged', 'insane', 'overdrive'];
+const PROACTIVE_PROFILE_ORDER = ['quiet', 'balanced', 'engaged', 'lively', 'immersive', 'hyper', 'unhinged'];
 const PROACTIVE_EVALUATOR_FALLBACK_MODEL = 'models/gemini-2.5-flash';
 const PROACTIVE_EVALUATOR_MODEL_BY_LIVE_MODEL = {
   'models/gemini-3.1-flash-live-preview': 'models/gemini-3.1-flash-lite',

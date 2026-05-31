@@ -248,18 +248,8 @@
           </select>
         </div>
 
-        <!-- Live Reasoning Selection -->
-        <div class="form-group">
-          <label for="select-live-thinking-level">Voice Reasoning</label>
-          <select id="select-live-thinking-level">
-            <option value="minimal">Minimal (Fastest)</option>
-            <option value="low">Low (Faster)</option>
-            <option value="medium">Medium (Balanced)</option>
-            <option value="high" selected>High (Smartest)</option>
-            <option value="auto">Auto (Provider Default)</option>
-          </select>
-          <span class="field-hint" style="display:block;margin-top:4px;">Applies to Gemini 3.1 Flash Live. Minimal keeps voice responsive; use subagents for heavier planning and research.</span>
-        </div>
+        <!-- Voice reasoning is hardcoded to Minimal (fastest, most responsive). The selector was removed
+             because higher levels caused long silent thinking pauses that stalled long conversations. -->
 
         <div class="form-group">
           <label>Subagent Prompt Brain</label>
@@ -285,8 +275,6 @@
             <option value="immersive">Immersive (3x Engaged)</option>
             <option value="hyper">Hyper (4x Engaged)</option>
             <option value="unhinged">Unhinged (5x Engaged)</option>
-            <option value="insane">Insane (20x Engaged)</option>
-            <option value="overdrive">Overdrive (50x Engaged)</option>
           </select>
           <span class="field-hint" style="display:block;margin-top:4px;">Use Immersive for movie watching or shared-screen sessions where the assistant should react much more often.</span>
         </div>

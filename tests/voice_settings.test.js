@@ -259,7 +259,7 @@ describe('voice setting session behavior', () => {
     expect(normalizeLiveModel('models/unknown-live-model')).toBe(DEFAULT_LIVE_MODEL);
   });
 
-  it('normalizes and applies Gemini 3 Live thinking levels', () => {
+  it('hardcodes Gemini 3 Live thinking to minimal regardless of input', () => {
     const {
       DEFAULT_LIVE_MODEL,
       FALLBACK_LIVE_MODEL,
@@ -272,23 +272,26 @@ describe('voice setting session behavior', () => {
 
     expect(liveThinkingLevel).toBe('minimal');
     expect(getStoredThinkingLevel()).toBe('minimal');
-    expect(normalizeLiveThinkingLevel('LOW')).toBe('low');
-    expect(normalizeLiveThinkingLevel('bad')).toBe('medium');
+    // The selector was removed; every input collapses to minimal.
+    expect(normalizeLiveThinkingLevel('LOW')).toBe('minimal');
+    expect(normalizeLiveThinkingLevel('high')).toBe('minimal');
+    expect(normalizeLiveThinkingLevel('bad')).toBe('minimal');
     expect(supportsLiveThinkingLevel(DEFAULT_LIVE_MODEL)).toBe(true);
     expect(supportsLiveThinkingLevel(FALLBACK_LIVE_MODEL)).toBe(false);
-    expect(getLiveGenerationThinkingConfig(DEFAULT_LIVE_MODEL, 'high')).toEqual({ thinkingLevel: 'high' });
-    expect(getLiveGenerationThinkingConfig(DEFAULT_LIVE_MODEL, 'auto')).toBe(null);
+    // Supported Gemini 3 models always get minimal; fallback (2.5 native audio) gets none.
+    expect(getLiveGenerationThinkingConfig(DEFAULT_LIVE_MODEL, 'high')).toEqual({ thinkingLevel: 'minimal' });
+    expect(getLiveGenerationThinkingConfig(DEFAULT_LIVE_MODEL)).toEqual({ thinkingLevel: 'minimal' });
     expect(getLiveGenerationThinkingConfig(FALLBACK_LIVE_MODEL, 'high')).toBe(null);
   });
 
-  it('migrates previous default voice reasoning levels (high/low) to the current default', () => {
+  it('forces any previously-saved voice reasoning level (high/low/medium) to minimal on every install', () => {
     const fromHigh = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'high');
-    expect(fromHigh.liveThinkingLevel).toBe('medium');
-    expect(fromHigh.getStoredThinkingLevel()).toBe('medium');
+    expect(fromHigh.liveThinkingLevel).toBe('minimal');
+    expect(fromHigh.getStoredThinkingLevel()).toBe('minimal');
 
-    const fromLow = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'low');
-    expect(fromLow.liveThinkingLevel).toBe('medium');
-    expect(fromLow.getStoredThinkingLevel()).toBe('medium');
+    const fromMedium = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'medium');
+    expect(fromMedium.liveThinkingLevel).toBe('minimal');
+    expect(fromMedium.getStoredThinkingLevel()).toBe('minimal');
   });
 
   it('routes executable work away from foreground smart consults', () => {
@@ -397,12 +400,13 @@ describe('voice setting session behavior', () => {
     expect(refused.assumed_success).not.toBe(true);
   });
 
-  it('offers Gemini 3.1 Flash Live, the 2.5 fallback, and voice reasoning in settings', () => {
+  it('offers Gemini 3.1 Flash Live and the 2.5 fallback in settings (voice reasoning selector removed)', () => {
     const indexHtml = fs.readFileSync(path.join(process.cwd(), 'src', 'index.html'), 'utf8');
 
     expect(indexHtml).toContain('models/gemini-3.1-flash-live-preview');
     expect(indexHtml).toContain('models/gemini-2.5-flash-native-audio-preview-12-2025');
-    expect(indexHtml).toContain('select-live-thinking-level');
+    // Voice reasoning is hardcoded to minimal now; the selector dropdown must be gone.
+    expect(indexHtml).not.toContain('select-live-thinking-level');
     expect(indexHtml).toContain('input-smart-main-routing-enabled');
     expect(indexHtml).toContain('input-assistant-name');
     expect(indexHtml).toContain('Subagent Prompt Brain');

@@ -807,13 +807,9 @@ function getDirectProactiveSettingsIntent(text) {
   const proactiveWords = /\b(proactive|talk|speak|chime|jump|comment|react|interrupt|quiet|chatty|present|active|movie|cinema|screen|watch|watching|hyper|unhinged|insane|overdrive|20x|50x)\b/.test(lower);
   if (!proactiveWords) return null;
 
-  if (/\b(?:overdrive|50x|fifty\s+times)\b/.test(lower) && /\b(?:proactive|talk|speak|chime|react|comment|present|active|mode|right now)\b/.test(lower)) {
-    return { args: { proactive_enabled: true, proactive_profile: 'overdrive' }, key: 'profile:overdrive' };
-  }
-  if (/\b(?:insane|20x|twenty\s+times)\b/.test(lower) && /\b(?:proactive|talk|speak|chime|react|comment|present|active|mode|right now)\b/.test(lower)) {
-    return { args: { proactive_enabled: true, proactive_profile: 'insane' }, key: 'profile:insane' };
-  }
-  if (/\b(?:unhinged|5x|five\s+times)\b/.test(lower) && /\b(?:proactive|talk|speak|chime|react|comment|present|active|mode)\b/.test(lower)) {
+  // "unhinged" (5x) is the top mode. The old extreme aliases (insane/20x, overdrive/50x) were removed,
+  // so a spoken request for any of them now maps here to the most-present surviving mode.
+  if (/\b(?:unhinged|insane|overdrive|5x|20x|50x|five\s+times|twenty\s+times|fifty\s+times)\b/.test(lower) && /\b(?:proactive|talk|speak|chime|react|comment|present|active|mode|right now)\b/.test(lower)) {
     return { args: { proactive_enabled: true, proactive_profile: 'unhinged' }, key: 'profile:unhinged' };
   }
   if (/\b(?:hyper|4x|four\s+times)\b/.test(lower) && /\b(?:proactive|talk|speak|chime|react|comment|present|active|mode)\b/.test(lower)) {
