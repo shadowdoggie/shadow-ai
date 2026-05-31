@@ -343,6 +343,26 @@ async function applyOnboardingSubagentChoice() {
 
   localStorage.setItem('shadow_subagent_provider', subagentProvider);
   localStorage.setItem('shadow_subagent_model', subagentModel);
+
+  // Reflect the onboarding choices in the Settings UI immediately. The Settings fields are populated
+  // once at boot (before onboarding runs), so without this the provider/keys/model look empty when the
+  // user opens Settings in the same session — even though they're saved in state + config.
+  try {
+    if (inputApiKey) inputApiKey.value = apiKey || '';
+    if (inputMinimaxKey) inputMinimaxKey.value = minimaxApiKey || '';
+    if (inputMoonshotKey) inputMoonshotKey.value = moonshotApiKey || '';
+    if (inputOllamaKey) inputOllamaKey.value = ollamaApiKey || '';
+    if (inputCustomEndpoint) inputCustomEndpoint.value = customEndpoint || '';
+    if (inputCustomApiKey) inputCustomApiKey.value = customApiKey || '';
+    if (prov === 'custom_openai') { if (inputCustomModel) inputCustomModel.value = subagentModel || ''; }
+    else if (prov === 'gemini' && selectSubagentModelGemini) selectSubagentModelGemini.value = subagentModel || 'models/gemini-3.1-flash-lite';
+    else if (prov === OPENAI_CODEX_PROVIDER && selectSubagentModelOpenaiCodex) selectSubagentModelOpenaiCodex.value = subagentModel || 'gpt-5.5';
+    else if (prov === 'minimax' && selectSubagentModelMinimax) selectSubagentModelMinimax.value = subagentModel || 'minimax-m2.7';
+    else if (prov === 'moonshot' && selectSubagentModelMoonshot) selectSubagentModelMoonshot.value = subagentModel || 'moonshotai/kimi-k2.6';
+    else if (prov === 'ollama' && selectSubagentModelOllama) selectSubagentModelOllama.value = subagentModel || 'deepseek-v3.1:671b-cloud';
+    // Set the provider dropdown last + fire change so the correct key/endpoint group is shown.
+    if (selectSubagentProvider) { selectSubagentProvider.value = subagentProvider; selectSubagentProvider.dispatchEvent(new Event('change')); }
+  } catch (e) { /* non-fatal: keys are already saved to state + config */ }
 }
 
 // Show the actionable "add your key" popup for a recognized credential. Debounced so a
