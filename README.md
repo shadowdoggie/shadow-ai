@@ -41,7 +41,7 @@ Hands-free, real-time voice. Long-term memory. Web search. Background agents. Yo
 - 🛰️ **Proactive companion mode** — can chime in and react, with adjustable chattiness.
 - ⏰ **Reminders & scheduling** — set things and get reminded, hands-free.
 - 📅 **Optional Google Workspace** — Gmail, Calendar, Drive, and Contacts using *your own* Google credentials (guided in-app setup, fully optional).
-- 🔌 **Bring your own model** — point background subagents at any OpenAI-compatible endpoint (a paid API or your own gateway), in addition to Gemini.
+- 🔌 **Your choice of model** — background subagents can run on **Gemini**, **OpenAI Codex**, **MiniMax**, **Canopy Wave (Kimi)**, **Ollama Cloud**, or **any custom OpenAI-compatible endpoint** (a paid API or your own gateway).
 
 > [!NOTE]
 > **Platform: Windows only — by design.** Shadow AI is built for Windows and there are no
