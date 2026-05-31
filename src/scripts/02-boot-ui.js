@@ -2143,6 +2143,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Start Scheduler Poller
   startSchedulerPoller();
 
+  // Focus-independent safety net: recover a stuck turn even when the window is backgrounded
+  // (the rAF visualizer loop below throttles/pauses when the app window is unfocused or minimized).
+  if (typeof startIdleVisualizerRecoveryTicker === 'function') startIdleVisualizerRecoveryTicker();
+
   // Start Visualizer Loop
   requestAnimationFrame(visualizerLoop);
 });

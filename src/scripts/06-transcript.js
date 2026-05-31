@@ -80,14 +80,46 @@ function maybeRecoverIdleVisualizerState() {
     return;
   }
   // Ultimate stuck guard: "thinking" must never sit for many seconds with no audio playing. If it
-  // has, a turn/follow-up flag got stuck (e.g. a barge-in mid tool follow-up). Force the turn idle
-  // and return to listening so the UI never freezes on the purple "thinking" bubble. The threshold
-  // is well above the 12s tool-follow-up timeout and 8s audio-stall recovery, so it never fires
-  // during legitimate waits.
-  if (!audioPlaying && _thinkingEnteredAt && (now - _thinkingEnteredAt) > VISUALIZER_THINKING_STUCK_MS) {
-    if (typeof markTurnIdle === 'function') markTurnIdle('stuck-thinking watchdog');
-    setVisualizerState('listening');
+  // has, a turn/follow-up flag got stuck (e.g. a turn that ended without a turnComplete, or a
+  // barge-in mid tool follow-up). Because that stuck "thinking" state keeps the mic input gate
+  // CLOSED (isLiveWorkActiveForVoiceBargeIn), the session would otherwise look frozen until a manual
+  // reconnect. Force the turn fully idle so the mic reopens and the purple "thinking" bubble clears.
+  // The threshold is well above the 12s tool-follow-up timeout and 8s audio-stall recovery, so it
+  // never fires during legitimate waits. We additionally skip while genuine backend work is in
+  // flight (a running command/tool or an in-progress prompt refinement) so we never cut off a slow
+  // but legitimate tool -- that case is not stuck, just slow.
+  const realWorkInFlight =
+    (typeof activeLiveBackendCommandIds !== 'undefined' && activeLiveBackendCommandIds.size > 0) ||
+    (typeof activeLiveToolCallEpochs !== 'undefined' && activeLiveToolCallEpochs.size > 0) ||
+    (typeof subagentPromptRefinementInProgress !== 'undefined' && subagentPromptRefinementInProgress);
+  if (!audioPlaying && !realWorkInFlight && _thinkingEnteredAt && (now - _thinkingEnteredAt) > VISUALIZER_THINKING_STUCK_MS) {
+    if (typeof forceRecoverStuckLiveTurn === 'function') {
+      forceRecoverStuckLiveTurn('stuck-thinking watchdog');
+    } else {
+      if (typeof markTurnIdle === 'function') markTurnIdle('stuck-thinking watchdog');
+      setVisualizerState('listening');
+    }
   }
+}
+
+// maybeRecoverIdleVisualizerState also runs from the rAF visualizer loop (07-visualizer.js), but the
+// browser throttles -- and for a minimized/hidden window fully PAUSES -- requestAnimationFrame. That
+// is the normal state for a hands-free voice assistant you talk to while doing something else. A
+// stuck-"thinking" state closes the mic input gate, so rAF-only recovery means a turn could freeze
+// (mic gated, no reply) until the window regained focus or the user manually reconnected -- the rare
+// "it just stops replying" bug. This setInterval runs the SAME recovery on a focus-independent timer
+// so a stuck turn always self-heals within ~14s even when the window is in the background.
+// Background setInterval is throttled to ~1s but, unlike rAF, keeps firing; Shadow's live
+// AudioContext also keeps the page from heavy timer throttling. The recovery is internally throttled
+// and idempotent, so running it from both the rAF loop and this ticker is safe.
+let _idleVisualizerRecoveryTicker = null;
+function startIdleVisualizerRecoveryTicker() {
+  if (_idleVisualizerRecoveryTicker) return;
+  _idleVisualizerRecoveryTicker = setInterval(() => {
+    try {
+      if (typeof maybeRecoverIdleVisualizerState === 'function') maybeRecoverIdleVisualizerState();
+    } catch (e) {}
+  }, 1000);
 }
 
 // --- Transcript Feed Handlers ---

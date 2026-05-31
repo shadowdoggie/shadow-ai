@@ -259,7 +259,7 @@ describe('voice setting session behavior', () => {
     expect(normalizeLiveModel('models/unknown-live-model')).toBe(DEFAULT_LIVE_MODEL);
   });
 
-  it('normalizes voice reasoning levels and defaults to minimal', () => {
+  it('normalizes voice reasoning levels and defaults to medium', () => {
     const {
       DEFAULT_LIVE_MODEL,
       FALLBACK_LIVE_MODEL,
@@ -268,14 +268,15 @@ describe('voice setting session behavior', () => {
       normalizeLiveThinkingLevel,
       supportsLiveThinkingLevel,
       getLiveGenerationThinkingConfig
-    } = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'minimal');
+    } = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'medium');
 
-    expect(liveThinkingLevel).toBe('minimal');
-    expect(getStoredThinkingLevel()).toBe('minimal');
-    // Selector is back: known levels are honored, unknown input falls back to the minimal default.
+    // 'medium' is not a former forced default, so a deliberate medium is preserved (and it is also the default).
+    expect(liveThinkingLevel).toBe('medium');
+    expect(getStoredThinkingLevel()).toBe('medium');
+    // Selector is back: known levels are honored, unknown input falls back to the medium default.
     expect(normalizeLiveThinkingLevel('LOW')).toBe('low');
     expect(normalizeLiveThinkingLevel('high')).toBe('high');
-    expect(normalizeLiveThinkingLevel('bad')).toBe('minimal');
+    expect(normalizeLiveThinkingLevel('bad')).toBe('medium');
     expect(supportsLiveThinkingLevel(DEFAULT_LIVE_MODEL)).toBe(true);
     expect(supportsLiveThinkingLevel(FALLBACK_LIVE_MODEL)).toBe(false);
     expect(getLiveGenerationThinkingConfig(DEFAULT_LIVE_MODEL, 'high')).toEqual({ thinkingLevel: 'high' });
@@ -283,12 +284,16 @@ describe('voice setting session behavior', () => {
     expect(getLiveGenerationThinkingConfig(FALLBACK_LIVE_MODEL, 'high')).toBe(null);
   });
 
-  it('migrates legacy default voice reasoning levels (high/low) to the current default (minimal)', () => {
+  it('migrates former default voice reasoning levels (high/low/minimal) to the current default (medium)', () => {
     const fromHigh = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'high');
-    expect(fromHigh.liveThinkingLevel).toBe('minimal');
+    expect(fromHigh.liveThinkingLevel).toBe('medium');
 
     const fromLow = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'low');
-    expect(fromLow.liveThinkingLevel).toBe('minimal');
+    expect(fromLow.liveThinkingLevel).toBe('medium');
+
+    // v1.8.1-v1.8.3 forced 'minimal' as the default and it hallucinated more; re-migrate those users up to 'medium'.
+    const fromMinimal = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'minimal');
+    expect(fromMinimal.liveThinkingLevel).toBe('medium');
   });
 
   it('routes executable work away from foreground smart consults', () => {

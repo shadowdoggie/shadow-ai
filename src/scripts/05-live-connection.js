@@ -2896,6 +2896,34 @@ function clearToolResponseFollowupPending() {
   toolResponseFollowupTimer = null;
 }
 
+// Force a stuck Live turn back to a clean listening state so the mic input gate reopens.
+// The mic gate (isLiveWorkActiveForVoiceBargeIn) stays CLOSED while any turn/tool/visualizer flag
+// still reads "work active". turnComplete normally clears all of those, but a turn can rarely end
+// WITHOUT a turnComplete (e.g. the model enters a thinking / tool-follow-up phase and the server
+// never sends turnComplete). When that happens the gate would stay shut and the session looks
+// frozen: the mic circle still animates (driven by the local analyser) but normal-volume speech is
+// gated behind the barge-in threshold and never reaches Gemini, so there is no reply until a manual
+// reconnect. This mirrors the flag resets turnComplete performs so the idle watchdog can reopen the
+// mic WITHOUT a reconnect. Only the watchdog calls this, and only once no real backend work is in
+// flight and no audio is playing (see maybeRecoverIdleVisualizerState).
+function forceRecoverStuckLiveTurn(reason = 'stuck-turn watchdog') {
+  console.warn(`[Live] Force-recovering a stuck turn (${reason}); reopening the mic input gate.`);
+  clearToolResponseFollowupPending();
+  clearInterruptedTurnFallback();
+  clearServerInterruptPending();
+  suppressInterruptedTurnAudio = false;
+  interruptedUserSpeechConfirmed = false;
+  interruptedAudioHoldStartedAt = 0;
+  resetLocalBargeInDetection();
+  if (audioPlayer) {
+    audioPlayer.clearOutputStallTimer();
+    audioPlayer.reset();
+  }
+  if (typeof clearSystemNoticeInFlight === 'function') clearSystemNoticeInFlight();
+  markTurnIdle(reason);
+  setVisualizerState('listening');
+}
+
 function getDynamicMicThreshold(playVolume = 0, options = {}) {
   const { protectPlayback = false } = options;
   // No mic-vs-playback echo gating during normal listening; only protect active playback from

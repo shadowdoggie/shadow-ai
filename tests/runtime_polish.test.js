@@ -393,7 +393,9 @@ describe('turn and transcript helpers', () => {
     expect(audio).toContain('echoProtected: playbackActiveForBargeIn ? micAboveThreshold : true');
     expect(audio).toContain('resetLocalBargeInDetection({');
     expect(audio).toContain('preservePreroll: activeWorkForBargeIn');
-    expect(audio).toContain('if (activeWorkForBargeIn) {');
+    // Pre-roll is buffered only when there is something to buffer; the branch no longer early-returns
+    // (it falls through to stream silence) so a stuck barge-in gate can't wedge the server VAD.
+    expect(audio).toContain('if (activeWorkForBargeIn && shouldBufferLocalBargeInAudio) {');
     expect(audio).toContain('queueLocalBargeInPrerollChunk(this.base64ArrayBuffer(bufferedPcm16.buffer))');
     expect(audio).toContain('const prerollChunks = consumeLocalBargeInPrerollChunks()');
     expect(audio.indexOf('for (const chunk of prerollChunks)')).toBeLessThan(audio.indexOf('this.onAudioChunk(base64);'));

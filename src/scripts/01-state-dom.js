@@ -70,13 +70,17 @@ const LEGACY_LIVE_MODEL_ALIASES = {
   'models/gemini-2.5-flash-native-audio-latest': DEFAULT_LIVE_MODEL,
   'models/gemini-2.5-flash-native-audio-preview-09-2025': FALLBACK_LIVE_MODEL
 };
-const DEFAULT_LIVE_THINKING_LEVEL = 'minimal';
-const LIVE_THINKING_DEFAULT_MIGRATION_KEY = 'shadow_live_thinking_default_migrated_medium_20260530';
+const DEFAULT_LIVE_THINKING_LEVEL = 'medium';
+const LIVE_THINKING_DEFAULT_MIGRATION_KEY = 'shadow_live_thinking_default_migrated_medium_20260531';
 const LIVE_THINKING_LEVELS = new Set(['auto', 'minimal', 'low', 'medium', 'high']);
-// Previous hardcoded defaults ('high' originally, then briefly 'low'). On a one-time
-// migration we move anyone still sitting on an old default to the current 'medium'
-// default; deliberate 'minimal' choices are left untouched.
-const LIVE_THINKING_LEGACY_DEFAULTS = new Set(['high', 'low']);
+// 'medium' is the current default (balanced quality vs. speed). Earlier builds shipped other
+// hardcoded defaults: 'high' originally, briefly 'low', then 'minimal' (v1.8.1-v1.8.3, which
+// hallucinated noticeably more). On a one-time migration -- keyed by the dated key above so it
+// re-runs once even for users a previous migration already moved to 'minimal' -- we bump anyone
+// still sitting on one of those former defaults up to 'medium'. Deliberate 'medium'/'auto'
+// choices are untouched, and any explicit level picked AFTER this migration runs sticks (the
+// key guard stops it from re-firing).
+const LIVE_THINKING_LEGACY_DEFAULTS = new Set(['high', 'low', 'minimal']);
 
 function normalizeLiveModel(model) {
   const requestedModel = String(model || '').trim();
@@ -104,7 +108,7 @@ function supportsLiveThinkingLevel(model) {
 }
 
 function getLiveGenerationThinkingConfig(model, level = liveThinkingLevel) {
-  // Honors the user's selected voice reasoning level; defaults to 'minimal' (fastest/most responsive).
+  // Honors the user's selected voice reasoning level; defaults to 'medium' (balanced quality vs. speed).
   const normalized = normalizeLiveThinkingLevel(level);
   if (normalized === 'auto' || !supportsLiveThinkingLevel(model)) return null;
   return { thinkingLevel: normalized };

@@ -354,14 +354,21 @@ class AudioRecorder {
 
         const micAboveThreshold = micLevel >= dynamicThreshold;
         const playbackActiveForBargeIn = isPlaybackActiveForBargeIn();
-        // PTT gate closed -> the user is not holding the key, so there is no barge-in: forcing this
-        // false skips the barge-in block, the pre-roll buffering branch, and the interrupt signal, so
-        // we simply stream silence below.
+        // The elevated barge-in gate (which forces the user to "talk over" the AI to be heard) should
+        // apply ONLY when there is a real reason for it: audio is ACTUALLY playing (echo protection)
+        // or a backend command/tool is genuinely mid-flight. We deliberately do NOT gate on the
+        // 'thinking'/'interrupting' visualizer state or a lingering tool-follow-up flag -- those can
+        // get STUCK with nothing actually happening, which silently throttles the mic and is the root
+        // cause of the rare "Shadow suddenly stops replying" freeze (you'd have to reconnect). When
+        // nothing is playing the mic stays open at the normal threshold, so the user is ALWAYS heard
+        // immediately and can simply talk to recover even if a turn got stuck. (PTT/mute still force
+        // the gate closed via inputGateClosed and stream silence below.)
+        const realBackendWorkActive =
+          (typeof activeLiveBackendCommandIds !== 'undefined' && activeLiveBackendCommandIds.size > 0) ||
+          (typeof activeLiveToolCallEpochs !== 'undefined' && activeLiveToolCallEpochs.size > 0);
         const activeWorkForBargeIn = inputGateClosed
           ? false
-          : (typeof isLiveWorkActiveForVoiceBargeIn === 'function'
-            ? isLiveWorkActiveForVoiceBargeIn()
-            : playbackActiveForBargeIn);
+          : (playbackActiveForBargeIn || realBackendWorkActive);
         const micAboveCandidateThreshold = micLevel >= candidateThreshold;
         // Gate closed (muted or PTT not held) -> never pass the user's audio (we stream silence below).
         // PTT held -> always pass.
@@ -398,17 +405,20 @@ class AudioRecorder {
         // Apply noise gate at all times to prevent background noise from keeping the server VAD open indefinitely,
         // and to prevent server-side false VAD barge-ins when AI is speaking.
         if (!shouldPassMicAudio) {
-          // When PTT is closed, activeWorkForBargeIn is forced false above, so we skip pre-roll
-          // buffering and just stream silence — the server keeps a continuous stream and finalizes
-          // the user's turn promptly instead of stalling.
-          if (activeWorkForBargeIn) {
-            if (shouldBufferLocalBargeInAudio) {
-              const bufferedData = this.resample(inputData, inputSampleRate, targetSampleRate);
-              const bufferedPcm16 = this.convertFloat32ToInt16(bufferedData);
-              queueLocalBargeInPrerollChunk(this.base64ArrayBuffer(bufferedPcm16.buffer));
-            }
-            return;
+          // Buffer the user's REAL audio so a local barge-in can flush the lead-in (the instant they
+          // start talking over the AI) without clipping the first syllables.
+          if (activeWorkForBargeIn && shouldBufferLocalBargeInAudio) {
+            const bufferedData = this.resample(inputData, inputSampleRate, targetSampleRate);
+            const bufferedPcm16 = this.convertFloat32ToInt16(bufferedData);
+            queueLocalBargeInPrerollChunk(this.base64ArrayBuffer(bufferedPcm16.buffer));
           }
+          // Stream continuous SILENCE rather than dropping frames. The old early `return` here (taken
+          // while "work" was active) sent NOTHING to the server, which wedges Gemini's server VAD:
+          // if any barge-in gate flag ever gets stuck true (e.g. a turn that ends without a
+          // turnComplete, leaving the visualizer on "thinking"), the mic stream goes fully dark and
+          // the model never detects end-of-speech again — the rare "circle still reacts but no reply
+          // until manual reconnect" freeze. Streaming silence keeps the VAD alive and matches the
+          // mute / PTT-closed behavior, honoring the "apply the noise gate at all times" rule above.
           inputData = new Float32Array(inputData.length);
         }
 
