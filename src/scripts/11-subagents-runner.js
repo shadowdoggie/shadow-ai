@@ -764,120 +764,10 @@ async function ensureReusableLearningArtifact(task, subagentRecord, finalText) {
   return result;
 }
 
-function getLmstudioBase() {
-  const ep = (typeof lmstudioEndpoint !== 'undefined' && lmstudioEndpoint) ? lmstudioEndpoint : 'http://localhost:1234/v1';
-  return String(ep).replace(/\/+$/, '');
-}
 
 function getCustomOpenAiBase() {
   const ep = (typeof customEndpoint !== 'undefined' && customEndpoint) ? customEndpoint : '';
   return String(ep).replace(/\/+$/, '');
-}
-
-// Base URL of the running built-in llama.cpp server (set from /api/llamacpp/status).
-function getLlamacppBuiltinBase() {
-  const ep = (typeof llamacppBuiltinBase !== 'undefined' && llamacppBuiltinBase) ? llamacppBuiltinBase : '';
-  return String(ep).replace(/\/+$/, '');
-}
-
-// Resolve the OpenAI-compatible base URL for any local provider (LM Studio, custom, built-in llama.cpp).
-function getSubagentOpenAiBase(provider) {
-  if (provider === 'custom_openai') return getCustomOpenAiBase();
-  if (provider === 'llamacpp_builtin') return getLlamacppBuiltinBase();
-  return getLmstudioBase();
-}
-
-async function fetchLlamacppStatus() {
-  const r = await fetchWithTimeout('/api/llamacpp/status', {}, 12000);
-  return await readFetchResponseJsonWithTimeout(r, 12000);
-}
-
-// MoE models (e.g. "...-A3B", "...-A4B", "8x7B") benefit hugely from expert-on-CPU offload,
-// which lets a model far bigger than VRAM run fast (only a few experts are active per token).
-function isMoeModelName(name) {
-  return /(-a\d+b|\bmoe\b|\d+x\d+b)/i.test(String(name || ''));
-}
-
-// Unload the built-in llama.cpp model from VRAM when no subagents have needed it for a short
-// grace period (so back-to-back subagents reuse the warm server, but an idle server frees VRAM).
-let llamacppIdleStopTimer = null;
-function cancelLlamacppIdleStop() {
-  if (llamacppIdleStopTimer) { clearTimeout(llamacppIdleStopTimer); llamacppIdleStopTimer = null; }
-}
-function scheduleLlamacppIdleStop() {
-  if (typeof subagentProvider === 'undefined' || subagentProvider !== 'llamacpp_builtin') return;
-  cancelLlamacppIdleStop();
-  llamacppIdleStopTimer = setTimeout(async () => {
-    llamacppIdleStopTimer = null;
-    const active = (typeof activeSubagents !== 'undefined' && Array.isArray(activeSubagents))
-      ? activeSubagents.some(s => s && /^(running|waiting_auth)$/i.test(String(s.status || '')))
-      : false;
-    if (active) return; // still working — keep it loaded
-    try { await fetchWithTimeout('/api/llamacpp/stop', { method: 'POST' }, 15000); } catch (e) {}
-    llamacppBuiltinBase = '';
-  }, 60000);
-}
-
-// Auto-start the built-in llama.cpp server for a subagent if it isn't already running, so the
-// user never has to start it manually. For MoE models it raises --n-cpu-moe step by step until
-// the model fits without an out-of-memory crash (getting the most out of the GPU); dense models
-// just try a single full-GPU load.
-async function ensureLlamacppServerRunning() {
-  cancelLlamacppIdleStop();
-  let sdata = await fetchLlamacppStatus();
-  if (!sdata || sdata.status !== 'success') throw new Error('Could not reach the built-in llama.cpp manager.');
-  const desiredModel = (typeof subagentModel === 'string' && subagentModel) ? subagentModel : '';
-  if (sdata.server && sdata.server.port) {
-    // Reuse the running server ONLY if it is serving the model the user currently has selected.
-    if (!desiredModel || sdata.server.model === desiredModel) {
-      llamacppBuiltinBase = `http://127.0.0.1:${sdata.server.port}/v1`;
-      if (sdata.server.model) subagentModel = sdata.server.model;
-      return;
-    }
-    // The user switched models — stop the old server so the newly selected one can load.
-    try { await fetchWithTimeout('/api/llamacpp/stop', { method: 'POST' }, 15000); } catch (e) {}
-    await new Promise(r => setTimeout(r, 800));
-  }
-  if (!sdata.binaryInstalled) {
-    throw new Error('Built-in llama.cpp is not installed. Open Settings > Built-in llama.cpp and click Install.');
-  }
-  let model = desiredModel;
-  if (!model) {
-    let models = sdata.models;
-    if (!Array.isArray(models)) models = models ? [models] : [];
-    if (models.length) { const m0 = models[0]; model = (typeof m0 === 'string') ? m0 : m0.name; }
-  }
-  if (!model) throw new Error('No local model downloaded. Open Settings > Built-in llama.cpp and download a model.');
-  const ctx = (typeof llamacppContextSize !== 'undefined' && llamacppContextSize) ? llamacppContextSize : 8192;
-
-  // ncmoe 0 = all on GPU; rising values offload more expert layers to CPU; 9999 = all experts on CPU.
-  const steps = isMoeModelName(model) ? [0, 8, 16, 24, 36, 48, 9999] : [0];
-  for (let i = 0; i < steps.length; i++) {
-    const ncmoe = steps[i];
-    if (i > 0) addSubagentMessage(`Model too big for full GPU — retrying with more MoE layers on CPU (n-cpu-moe ${ncmoe >= 9999 ? 'all' : ncmoe})...`);
-    const startRes = await fetchWithTimeout('/api/llamacpp/start', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, ctx, ncmoe })
-    }, 30000);
-    const startData = await readFetchResponseJsonWithTimeout(startRes, 30000);
-    if (!startData || startData.status !== 'success') throw new Error((startData && startData.error) || 'Could not start the built-in llama.cpp server.');
-    llamacppBuiltinBase = startData.baseUrl || `http://127.0.0.1:${startData.port}/v1`;
-    subagentModel = startData.model || model;
-
-    // Poll: listening = success; process vanished = crashed (likely OOM) -> offload more.
-    const deadline = Date.now() + 150000;
-    let outcome = 'timeout';
-    while (Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, 2500));
-      let p;
-      try { p = await fetchLlamacppStatus(); } catch (e) { continue; }
-      if (p && p.server && p.server.listening) { outcome = 'listening'; break; }
-      if (p && !p.server) { outcome = 'dead'; break; }
-    }
-    if (outcome === 'listening' || outcome === 'timeout') return;
-    if (i === steps.length - 1) {
-      throw new Error('Could not fit the model even with all experts on CPU. Try a smaller model or a lower quant.');
-    }
-  }
 }
 
 function getSmartConsultModel() {
@@ -894,9 +784,7 @@ function getSmartConsultModel() {
   if (provider === 'minimax') return configuredModel || 'minimax-m2.7';
   if (provider === 'moonshot') return configuredModel || 'moonshotai/kimi-k2.6';
   if (provider === 'ollama') return configuredModel || 'deepseek-v3.1:671b-cloud';
-  if (provider === 'lmstudio_local') return configuredModel || '';
   if (provider === 'custom_openai') return configuredModel || '';
-  if (provider === 'llamacpp_builtin') return configuredModel || '';
   return configuredModel || 'gpt-5.5';
 }
 
@@ -1158,11 +1046,6 @@ async function runSubagentPromptRefinement(args = {}) {
     backendCancelable: provider === codexProvider
   };
 
-  // NOTE: refinement does NOT start/load the built-in llama.cpp server. Loading a model can take a
-  // long time and would tie up the single-threaded backend (stalling the voice). If the server
-  // isn't up yet, refinement is skipped (the caller falls back to the raw task) and the server is
-  // started by the subagent loop instead — keeping the voice responsive.
-
   try {
     let response;
     let refined = '';
@@ -1202,10 +1085,10 @@ async function runSubagentPromptRefinement(args = {}) {
       const json = await readFetchResponseJsonWithTimeout(response, SMART_CONSULT_MODEL_TIMEOUT_MS, refineRecord);
       if (!response.ok) throw new Error(`Subagent prompt refinement failed: HTTP ${response.status}. ${JSON.stringify(json).slice(0, 500)}`);
       refined = extractTextFromOllamaChatResponse(json);
-    } else if (provider === 'lmstudio_local' || provider === 'custom_openai' || provider === 'llamacpp_builtin') {
-      if (!targetModel) throw new Error('No subagent model set for the local provider. Pick/load a model in Settings.');
-      const base = getSubagentOpenAiBase(provider);
-      if (!base) throw new Error(provider === 'llamacpp_builtin' ? 'Built-in llama.cpp server is not running. Start it in Settings.' : 'Custom endpoint URL is not set. Add it in Settings.');
+    } else if (provider === 'custom_openai') {
+      if (!targetModel) throw new Error('No model name set for the custom endpoint. Set it in Settings.');
+      const base = getCustomOpenAiBase();
+      if (!base) throw new Error('Custom endpoint URL is not set. Add it in Settings.');
       const proxyHeaders = { 'Content-Type': 'application/json' };
       if (provider === 'custom_openai' && typeof customApiKey === 'string' && customApiKey.trim()) {
         proxyHeaders.Authorization = `Bearer ${customApiKey.trim()}`;
@@ -1347,10 +1230,10 @@ async function runSmartConsult(args = {}) {
       }
       answer = extractTextFromOllamaChatResponse(json);
       reasoningEffort = 'provider-default';
-    } else if (provider === 'lmstudio_local' || provider === 'custom_openai' || provider === 'llamacpp_builtin') {
-      if (!targetModel) throw new Error('No subagent model set for the local provider. Pick/load a model in Settings.');
-      const base = getSubagentOpenAiBase(provider);
-      if (!base) throw new Error(provider === 'llamacpp_builtin' ? 'Built-in llama.cpp server is not running. Start it in Settings.' : 'Custom endpoint URL is not set. Add it in Settings.');
+    } else if (provider === 'custom_openai') {
+      if (!targetModel) throw new Error('No model name set for the custom endpoint. Set it in Settings.');
+      const base = getCustomOpenAiBase();
+      if (!base) throw new Error('Custom endpoint URL is not set. Add it in Settings.');
       const proxyHeaders = { 'Content-Type': 'application/json' };
       if (provider === 'custom_openai' && typeof customApiKey === 'string' && customApiKey.trim()) {
         proxyHeaders.Authorization = `Bearer ${customApiKey.trim()}`;
@@ -1434,19 +1317,6 @@ async function runRestSubagent(task, model, subagentRecord = null) {
     updateSubagentIndicator();
   }
 
-  // Built-in llama.cpp: auto-start the local server (the user never starts it manually).
-  if (subagentProvider === 'llamacpp_builtin') {
-    addSubagentMessage('Starting the built-in llama.cpp server (loading the model may take a moment)...');
-    try {
-      await ensureLlamacppServerRunning();
-    } catch (e) {
-      addSubagentMessage(`Could not start the built-in llama.cpp server: ${e.message}`);
-      failSubagentRecord(subagentRecord, `Built-in llama.cpp unavailable: ${e.message}`);
-      updateSubagentIndicator();
-      return;
-    }
-  }
-
   // Saved skills can contain private connection details. Do not preload them into
   // every subagent prompt; the subagent must call get_available_skills when the
   // task actually requires learned workflow discovery.
@@ -1469,7 +1339,7 @@ async function runRestSubagent(task, model, subagentRecord = null) {
   // poorly: it adds turns and grows the prompt past their loaded context (causing crashes), and
   // they stall on simple tasks. For local providers, make self-learning optional and tell them to
   // finish promptly; Shadow still auto-saves a reusable skill on finish for repeatable tasks.
-  const isLocalSubagentProvider = subagentProvider === 'lmstudio_local' || subagentProvider === 'custom_openai' || subagentProvider === 'llamacpp_builtin';
+  const isLocalSubagentProvider = subagentProvider === 'custom_openai';
   const requiredSelfLearningRule = isLocalSubagentProvider
     ? '- SELF-LEARNING (OPTIONAL for local models): Saving a reusable skill is OPTIONAL and NOT required. For simple one-off tasks (e.g. creating a file), do NOT call get_available_skills or save_skill — call finish_task as soon as a tool result confirms the deliverable exists.'
     : '- REQUIRED SELF-LEARNING: For successful repeatable workflows, including media downloads, conversions, uploads, browser workflows, scripts, builds, and automations, you MUST save or merge a reusable skill BEFORE finish_task(status="success"). You MUST call get_available_skills first to inspect duplicates. If a similar skill exists, merge your new details into that existing item using its existing name; do NOT create a duplicate.';
@@ -2022,10 +1892,10 @@ When finished, you MUST call finish_task with status="success" only if the reque
             endpointUrl = 'https://ollama.com/v1/chat/completions';
             headers['Authorization'] = `Bearer ${ollamaApiKey}`;
             payload.model = subagentModel || 'deepseek-v3.1:671b-cloud';
-          } else if (subagentProvider === 'lmstudio_local' || subagentProvider === 'custom_openai' || subagentProvider === 'llamacpp_builtin') {
-            if (!subagentModel) throw new Error('No subagent model set for the local provider. Open Settings and pick/load a model.');
-            const base = getSubagentOpenAiBase(subagentProvider);
-            if (!base) throw new Error(subagentProvider === 'llamacpp_builtin' ? 'Built-in llama.cpp server is not running. Start it in Settings.' : 'Custom endpoint URL is not set. Add it in Settings.');
+          } else if (subagentProvider === 'custom_openai') {
+            if (!subagentModel) throw new Error('No model name set for the custom endpoint. Open Settings and pick/enter a model.');
+            const base = getCustomOpenAiBase();
+            if (!base) throw new Error('Custom endpoint URL is not set. Add it in Settings.');
             endpointUrl = `${base}/chat/completions`;
             payload.model = subagentModel;
             if (subagentProvider === 'custom_openai' && typeof customApiKey === 'string' && customApiKey.trim()) {

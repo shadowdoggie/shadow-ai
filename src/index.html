@@ -285,9 +285,7 @@
             <option value="minimax">MiniMax API</option>
             <option value="moonshot">Canopy Wave API</option>
             <option value="ollama">Ollama Cloud</option>
-            <option value="lmstudio_local">LM Studio (Local)</option>
             <option value="custom_openai">Custom (OpenAI-compatible)</option>
-            <option value="llamacpp_builtin">Built-in llama.cpp (Local)</option>
           </select>
         </div>
         
@@ -333,10 +331,6 @@
             <option value="ministral-3">Ministral 3 (vision, tools)</option>
             <option value="devstral-small-2">Devstral Small 2 24B (vision, tools)</option>
           </select>
-
-          <select id="select-subagent-model-lmstudio-local" class="subagent-model-select" style="display: none;">
-            <option value="">No LM Studio models found</option>
-          </select>
         </div>
 
         <div class="form-group" id="group-subagent-reasoning-mode" style="display: none;">
@@ -379,20 +373,6 @@
           <input type="password" id="input-ollama-key" placeholder="Enter Ollama Cloud API Key" autocomplete="off">
         </div>
 
-        <div class="form-group" id="group-lmstudio-local-settings" style="display: none;">
-          <label for="input-lmstudio-endpoint">LM Studio Server URL</label>
-          <input type="text" id="input-lmstudio-endpoint" placeholder="http://localhost:1234/v1" autocomplete="off">
-          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
-            <button id="btn-refresh-lmstudio-models" class="secondary-button" type="button">Refresh models</button>
-            <span id="lmstudio-status" class="field-hint" style="margin:0;">No model loaded yet.</span>
-          </div>
-          <span class="field-hint" style="display:block;margin-top:6px;">
-            Runs against your own machine via LM Studio's local server — no API key. In <a href="https://lmstudio.ai/" target="_blank" rel="noopener noreferrer" style="color:#00f2fe;">LM Studio</a>, load a model and start the server (Developer tab), then click Refresh. The model list is auto-detected. Set the model's <strong>context length and parallelism inside LM Studio</strong> when you load it (LM Studio handles parallel requests, default 4).
-          </span>
-          <span class="field-hint" style="display:block;margin-top:6px;color:#ffcf6b;">
-            ⚠️ Load the model with a <strong>context length of at least ~8,000 tokens</strong> in LM Studio. Shadow's subagent system prompt and tools are large, so very small contexts (e.g. 512) fail immediately. More context = more room for multi-step tasks.
-          </span>
-        </div>
 
         <div class="form-group" id="group-custom-settings" style="display: none;">
           <label for="input-custom-endpoint">Custom API Base URL (OpenAI-compatible)</label>
@@ -407,74 +387,7 @@
             <span id="custom-status" class="field-hint" style="margin:0;">Enter your endpoint, then Fetch models (optional).</span>
           </div>
           <span class="field-hint" style="display:block;margin-top:6px;">
-            For any OpenAI-compatible server — <strong>llama.cpp</strong>, vLLM, text-generation-webui, a remote gateway, etc. Point at its base URL (usually ending in <code>/v1</code>). Shadow calls <code>/chat/completions</code> and tries <code>/models</code> to auto-fill the list; if your server doesn't expose <code>/models</code>, just type the model name. Set context length on the server side — use <strong>at least ~8,000 tokens</strong> (Shadow's subagent prompt + tools are large; tiny contexts fail immediately).
-          </span>
-        </div>
-
-        <!-- Built-in llama.cpp manager -->
-        <div class="form-group" id="group-llamacpp-builtin-settings" style="display: none;">
-          <label>Built-in llama.cpp <span id="llamacpp-backend-badge" class="field-hint" style="text-transform:none;margin-left:6px;"></span></label>
-          <span class="field-hint" style="display:block;margin-top:2px;">
-            Shadow downloads and runs a local <strong>llama.cpp</strong> server for you — no separate install. Pick the GPU build automatically, download a GGUF model, and start it. Works on NVIDIA (CUDA), AMD/Intel (Vulkan), or CPU.
-          </span>
-
-          <div style="display:flex;gap:8px;align-items:center;margin-top:10px;">
-            <button id="btn-llamacpp-install" class="secondary-button" type="button">Install / Update llama.cpp</button>
-            <span id="llamacpp-binary-status" class="field-hint" style="margin:0;">Checking...</span>
-          </div>
-
-          <label for="select-llamacpp-catalog" style="display:block;margin-top:12px;">Choose a model to download</label>
-          <select id="select-llamacpp-catalog"></select>
-          <span id="llamacpp-catalog-note" class="field-hint" style="display:block;margin-top:3px;"></span>
-          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;">
-            <label for="select-llamacpp-quant" style="margin:0;">Quant</label>
-            <select id="select-llamacpp-quant">
-              <option value="Q4_K_M" selected>Q4_K_M (recommended)</option>
-              <option value="Q5_K_M">Q5_K_M (higher quality)</option>
-              <option value="Q6_K">Q6_K</option>
-              <option value="Q8_0">Q8_0 (largest)</option>
-              <option value="Q3_K_M">Q3_K_M (smallest)</option>
-            </select>
-            <button id="btn-llamacpp-download" class="secondary-button" type="button">Download</button>
-            <span id="llamacpp-download-status" class="field-hint" style="margin:0;"></span>
-          </div>
-          <span class="field-hint" style="display:block;margin-top:4px;">
-            Pick a model and quant, then Download — Shadow fetches the exact file from Hugging Face for you. <strong>Q4_K_M</strong> balances size and quality. The list is curated; use search below for anything newer.
-          </span>
-
-          <details style="margin-top:10px;">
-            <summary class="field-hint" style="cursor:pointer;">Search Hugging Face for more models</summary>
-            <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
-              <input type="text" id="input-llamacpp-search" placeholder="e.g. Llama, Mistral, Devstral, GLM..." autocomplete="off">
-              <button id="btn-llamacpp-search" class="secondary-button" type="button">Search</button>
-            </div>
-            <select id="select-llamacpp-search-results" style="margin-top:6px;"><option value="">Search results appear here</option></select>
-            <span class="field-hint" style="display:block;margin-top:2px;">Pick a GGUF repo from the results, choose a quant above, then click Download.</span>
-          </details>
-
-          <details style="margin-top:8px;">
-            <summary class="field-hint" style="cursor:pointer;">Advanced: paste an exact repo + filename</summary>
-            <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">
-              <input type="text" id="input-llamacpp-repo" placeholder="Hugging Face repo (e.g. unsloth/Qwen3.6-27B-GGUF)" autocomplete="off">
-              <input type="text" id="input-llamacpp-file" placeholder="exact .gguf filename" autocomplete="off">
-              <button id="btn-llamacpp-download-manual" class="secondary-button" type="button">Download by exact filename</button>
-            </div>
-          </details>
-
-          <label for="select-llamacpp-model" style="display:block;margin-top:12px;">Model</label>
-          <select id="select-llamacpp-model"><option value="">No models downloaded yet</option></select>
-          <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
-            <button id="btn-llamacpp-delete-model" class="danger-button" type="button">Delete</button>
-            <label for="input-llamacpp-ctx" style="margin:0;">Context</label>
-            <input type="number" id="input-llamacpp-ctx" min="512" step="1024" value="16384" style="width:110px;">
-          </div>
-
-          <div style="display:flex;gap:8px;align-items:center;margin-top:12px;">
-            <span id="llamacpp-server-status" class="field-hint" style="margin:0;flex:1;">Starts automatically when a subagent runs.</span>
-            <button id="btn-llamacpp-stop" class="secondary-button" type="button">Stop server</button>
-          </div>
-          <span class="field-hint" style="display:block;margin-top:6px;">
-            Shadow starts the local server <strong>automatically</strong> the first time a subagent runs — no need to start it yourself. The selected model + context is what background subagents use. Use at least ~8,000 context (Shadow's subagent prompt + tools are large).
+            For any OpenAI-compatible API — a paid hosted provider or your own gateway. Point at its base URL (usually ending in <code>/v1</code>). Shadow calls <code>/chat/completions</code> and tries <code>/models</code> to auto-fill the list; if the endpoint doesn't expose <code>/models</code>, just type the model name. Use a model with a generous context window — Shadow's subagent prompt + tools are large.
           </span>
         </div>
 
@@ -520,91 +433,6 @@
             <span>Check for updates on launch</span>
           </label>
           <span class="field-hint" style="display:block;margin-top:4px;">When a newer release is available, Shadow shows a one-time notice with a link to download the installer. Shadow never updates itself without your click.</span>
-        </div>
-
-        <!-- Local Voice (experimental) -->
-        <div class="form-group">
-          <label>Local Voice <span class="field-hint" style="text-transform:none;">(experimental)</span></label>
-          <span class="field-hint" style="display:block;margin-top:2px;">
-            Run speech-to-text fully locally (no cloud), via sherpa-onnx. Choose Parakeet (fast, 25 languages) or Whisper Turbo (slower, ~99 languages). This is an early preview to validate the engine — the full local voice mode (local STT + TTS + brain) is in progress. STT runs fast even on CPU.
-          </span>
-          <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap;">
-            <button id="btn-voice-stt-install" class="secondary-button" type="button">Install speech engine</button>
-            <span id="voice-stt-install-status" class="field-hint" style="margin:0;">Checking...</span>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
-            <select id="voice-stt-model-select" style="min-width:190px;">
-              <option value="parakeet">Parakeet (fast, 25 langs)</option>
-              <option value="whisper">Whisper Turbo (~99 langs)</option>
-            </select>
-            <button id="btn-voice-stt-download" class="secondary-button" type="button">Download model</button>
-            <span id="voice-stt-model-status" class="field-hint" style="margin:0;"></span>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
-            <button id="btn-voice-stt-test" class="primary-button" type="button">Test transcription</button>
-            <span id="voice-stt-test-result" class="field-hint" style="margin:0;"></span>
-          </div>
-
-          <hr style="border:none;border-top:1px solid var(--border,#333);margin:14px 0 10px;">
-          <span class="field-hint" style="display:block;">
-            Local text-to-speech via Qwen3-TTS. Cross-vendor: auto-picks a Vulkan build for NVIDIA/AMD/Intel GPUs, or a CPU build. The 1.7B voice sounds best; 0.6B is the lightweight option. Output is auto-normalized for loudness.
-          </span>
-          <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap;">
-            <button id="btn-voice-tts-install" class="secondary-button" type="button">Install TTS engine</button>
-            <span id="voice-tts-install-status" class="field-hint" style="margin:0;">Checking...</span>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
-            <select id="voice-tts-model-select" style="min-width:200px;">
-              <option value="1.7b">Qwen3-TTS 1.7B (best quality)</option>
-              <option value="0.6b">Qwen3-TTS 0.6B (lightweight)</option>
-            </select>
-            <button id="btn-voice-tts-download" class="secondary-button" type="button">Download voice model</button>
-            <span id="voice-tts-model-status" class="field-hint" style="margin:0;"></span>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
-            <select id="voice-tts-lang-select" style="min-width:130px;">
-              <option value="auto">Auto-detect</option>
-              <option value="English">English</option>
-              <option value="Chinese">Chinese</option>
-              <option value="German">German</option>
-              <option value="French">French</option>
-              <option value="Spanish">Spanish</option>
-              <option value="Italian">Italian</option>
-              <option value="Portuguese">Portuguese</option>
-              <option value="Japanese">Japanese</option>
-              <option value="Korean">Korean</option>
-              <option value="Russian">Russian</option>
-            </select>
-            <input id="voice-tts-text" type="text" placeholder="Text to speak..." value="Hello! This is a local Qwen 3 text to speech voice." style="flex:1;min-width:220px;">
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
-            <label class="field-hint" style="margin:0;">Voice:</label>
-            <select id="voice-tts-voice-mode" style="min-width:160px;">
-              <option value="default">Default voice</option>
-              <option value="design">Describe a voice</option>
-              <option value="clone">Clone from a sample</option>
-            </select>
-          </div>
-          <div id="voice-tts-design-row" style="display:none;flex-direction:column;gap:6px;margin-top:8px;">
-            <input id="voice-tts-instruct" type="text" placeholder="Describe the voice, e.g. 'warm female, calm, British accent'" style="width:100%;">
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-              <button id="btn-voice-tts-design-download" class="secondary-button" type="button">Download voice-design model</button>
-              <span id="voice-tts-design-status" class="field-hint" style="margin:0;"></span>
-            </div>
-          </div>
-          <div id="voice-tts-clone-row" style="display:none;flex-direction:column;gap:6px;margin-top:8px;">
-            <input id="voice-tts-ref-wav" type="text" placeholder="Path to a short voice sample (.wav), e.g. C:\\voices\\me.wav" style="width:100%;">
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-              <button id="btn-voice-tts-transcribe" class="secondary-button" type="button">Auto-transcribe sample</button>
-              <span id="voice-tts-transcribe-status" class="field-hint" style="margin:0;">Uses local STT to fill the transcript below.</span>
-            </div>
-            <input id="voice-tts-ref-text" type="text" placeholder="Transcript of that sample (auto-filled, or type it yourself)" style="width:100%;">
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
-            <button id="btn-voice-tts-test" class="primary-button" type="button">Test TTS</button>
-            <span id="voice-tts-test-result" class="field-hint" style="margin:0;"></span>
-          </div>
-          <audio id="voice-tts-audio" style="display:none;"></audio>
         </div>
 
         <!-- System Instruction / Personality Prompt -->
@@ -796,7 +624,7 @@
         <h2 class="onboarding-title">Background helpers</h2>
         <p class="onboarding-description">
           Shadow can spin up <strong>subagents</strong> for multi-step work in the background &mdash; research, coding, file tasks, and more.
-          By default they use your Gemini key, so there's nothing to set up. Prefer a local model? Point them at LM Studio, llama.cpp, or another provider.
+          By default they use your Gemini key, so there's nothing to set up. You can also point them at any OpenAI-compatible endpoint (a paid API or your own gateway) in Settings.
         </p>
         <div class="form-group">
           <label for="onboarding-subagent-provider">Subagent provider</label>
@@ -945,17 +773,17 @@
   <video id="screen-video" autoplay playsinline style="display:none;"></video>
   <canvas id="screen-canvas" style="display:none;"></canvas>
 
-  <script src="scripts/01-state-dom.js?v=voice-whisper-20260530"></script>
-  <script src="scripts/02-boot-ui.js?v=voice-whisper-20260530"></script>
-  <script src="scripts/03-screen-config.js?v=llamacpp-20260530"></script>
+  <script src="scripts/01-state-dom.js?v=release150b-20260530"></script>
+  <script src="scripts/02-boot-ui.js?v=release150b-20260530"></script>
+  <script src="scripts/03-screen-config.js?v=remove-ollama-local-20260530"></script>
   <script src="scripts/04-audio.js?v=audio-stall-recovery-20260528"></script>
-  <script src="scripts/05-live-connection.js?v=llamacpp-h-20260530"></script>
+  <script src="scripts/05-live-connection.js?v=remove-ollama-local-20260530"></script>
   <script src="scripts/06-transcript.js?v=release-hardening-20260528"></script>
   <script src="scripts/07-visualizer.js?v=fix-20260521"></script>
-  <script src="scripts/08-memory.js?v=llamacpp-f-20260530"></script>
-  <script src="scripts/09-subagents-core.js?v=llamacpp-i-20260530"></script>
+  <script src="scripts/08-memory.js?v=steer-not-cancel-20260530"></script>
+  <script src="scripts/09-subagents-core.js?v=remove-ollama-local-20260530"></script>
   <script src="scripts/10-scheduler-proactive.js?v=reboot-truth-20260528"></script>
-  <script src="scripts/11-subagents-runner.js?v=llamacpp-i-20260530"></script>
+  <script src="scripts/11-subagents-runner.js?v=ctx-overflow-recovery-20260530"></script>
   <script src="scripts/12-subagents-notifications.js?v=cred-prompt-20260529"></script>
   <script src="scripts/13-google-workspace.js?v=upload-resilience-20260529"></script>
 </body>

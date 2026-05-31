@@ -341,11 +341,6 @@ async function loadConfigFromServer() {
       localStorage.setItem('shadow_ollama_key', ollamaApiKey);
       inputOllamaKey.value = ollamaApiKey;
     }
-    if (config.shadow_lmstudio_endpoint) {
-      lmstudioEndpoint = config.shadow_lmstudio_endpoint;
-      localStorage.setItem('shadow_lmstudio_endpoint', lmstudioEndpoint);
-      if (inputLmstudioEndpoint) inputLmstudioEndpoint.value = lmstudioEndpoint;
-    }
     if (config.shadow_custom_endpoint !== undefined) {
       customEndpoint = config.shadow_custom_endpoint || '';
       localStorage.setItem('shadow_custom_endpoint', customEndpoint);
@@ -789,7 +784,7 @@ async function applyShadowSettingsUpdate(args = {}) {
 
   const nextProvider = valueOrCurrent(requestedArgs.subagent_provider, subagentProvider).toLowerCase();
   if (nextProvider !== subagentProvider) {
-    if (['gemini', OPENAI_CODEX_PROVIDER, 'minimax', 'moonshot', 'ollama', 'lmstudio_local', 'custom_openai', 'llamacpp_builtin'].includes(nextProvider)) {
+    if (['gemini', OPENAI_CODEX_PROVIDER, 'minimax', 'moonshot', 'ollama', 'custom_openai'].includes(nextProvider)) {
       subagentProvider = nextProvider;
       localStorage.setItem('shadow_subagent_provider', subagentProvider);
       if (selectSubagentProvider) {
@@ -811,7 +806,6 @@ async function applyShadowSettingsUpdate(args = {}) {
     else if (subagentProvider === 'minimax' && selectSubagentModelMinimax) selectSubagentModelMinimax.value = subagentModel;
     else if (subagentProvider === 'moonshot' && selectSubagentModelMoonshot) selectSubagentModelMoonshot.value = subagentModel;
     else if (subagentProvider === 'ollama' && selectSubagentModelOllama) selectSubagentModelOllama.value = subagentModel;
-    else if (subagentProvider === 'lmstudio_local' && selectSubagentModelLmstudioLocal) selectSubagentModelLmstudioLocal.value = subagentModel;
     else if (subagentProvider === 'custom_openai' && inputCustomModel) inputCustomModel.value = subagentModel;
     changed.push('subagent model');
   }

@@ -80,22 +80,6 @@ async function maybeCheckForUpdate() {
   }
 }
 
-// Auto-update the built-in llama.cpp binary at launch (unless update checks are disabled).
-// Safe: the backend defers if a server is running, so this never interrupts a live subagent,
-// and at launch no server is running yet.
-async function maybeAutoUpdateLlamacpp() {
-  try {
-    if (typeof autoUpdateCheckEnabled !== 'undefined' && !autoUpdateCheckEnabled) return;
-    const res = await fetchLocalApiWithTimeout('/api/llamacpp/check-update', {}, LOCAL_API_TIMEOUT_MS);
-    if (!res.ok) return;
-    const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-    if (!data || data.status !== 'success' || !data.updateAvailable) return;
-    await fetchLocalApiWithTimeout('/api/llamacpp/binary/install', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ auto: true })
-    }, LOCAL_API_TIMEOUT_MS);
-  } catch (e) { /* silent: an update check must never interrupt startup */ }
-}
-
 // Populate and reveal the update toast. The "Update" anchor points at the installer asset
 // when the release has one, otherwise the release page; clicking it opens the browser.
 function showUpdateToast(data) {
@@ -124,13 +108,11 @@ let onboardingCurrentStep = 1;
 // settings-open defaults so a finished subagent provider is never left with a broken model.
 const ONBOARDING_PROVIDER_CONFIG = {
   gemini: { info: 'Uses your Gemini key — nothing else to set up. Great default.', defaultModel: 'models/gemini-3.1-flash-lite' },
-  lmstudio_local: { endpoint: true, endpointDefault: 'http://localhost:1234/v1', info: 'Run a model in LM Studio and start its local server. Shadow auto-detects the loaded model.', defaultModel: '' },
-  custom_openai: { endpoint: true, key: true, keyLabel: 'API key (optional)', endpointDefault: 'http://localhost:8080/v1', info: 'Any OpenAI-compatible server — llama.cpp, vLLM, text-generation-webui, or a remote gateway.', defaultModel: '' },
+  custom_openai: { endpoint: true, key: true, keyLabel: 'API key (optional)', endpointDefault: 'https://api.openai.com/v1', info: 'Any OpenAI-compatible endpoint — a paid hosted API or your own gateway. Enter the base URL + model.', defaultModel: '' },
   ollama: { key: true, keyLabel: 'Ollama Cloud API key', info: 'Runs on Ollama\'s hosted cloud models.', defaultModel: 'deepseek-v3.1:671b-cloud' },
   minimax: { key: true, keyLabel: 'MiniMax API key', info: 'Uses MiniMax\'s hosted models.', defaultModel: 'minimax-m2.7' },
   moonshot: { key: true, keyLabel: 'Canopy Wave API key', info: 'Uses Canopy Wave / Moonshot hosted models.', defaultModel: 'moonshotai/kimi-k2.6' },
-  openai_codex: { info: 'Codex uses a one-time sign-in — finish connecting it in Settings after setup.', defaultModel: 'gpt-5.5' },
-  llamacpp_builtin: { info: 'Shadow runs a local llama.cpp server for you. Finish setup (install + download a model) in Settings after onboarding.', defaultModel: '', settingsOnly: true }
+  openai_codex: { info: 'Codex uses a one-time sign-in — finish connecting it in Settings after setup.', defaultModel: 'gpt-5.5' }
 };
 
 // The Settings model <select> whose options the onboarding model dropdown clones for each
@@ -142,7 +124,6 @@ function getOnboardingModelSourceSelect(prov) {
     case 'minimax': return selectSubagentModelMinimax;
     case 'moonshot': return selectSubagentModelMoonshot;
     case 'ollama': return selectSubagentModelOllama;
-    case 'lmstudio_local': return selectSubagentModelLmstudioLocal;
     default: return null;
   }
 }
@@ -186,8 +167,7 @@ function updateOnboardingSubagentUI() {
   const cfg = ONBOARDING_PROVIDER_CONFIG[prov] || {};
   const isCodex = prov === 'openai_codex';
   const isCustom = prov === 'custom_openai';
-  const isLocal = prov === 'lmstudio_local' || isCustom;
-  const settingsOnly = !!cfg.settingsOnly;
+  const isLocal = isCustom;
 
   if (onboardingSubagentEndpointGroup) {
     onboardingSubagentEndpointGroup.classList.toggle('hidden', !cfg.endpoint);
@@ -205,8 +185,7 @@ function updateOnboardingSubagentUI() {
   if (isCodex) checkOnboardingCodexStatus();
 
   // Model selection: a dropdown for fixed providers, a free-text field for custom.
-  // Settings-only providers (built-in llama.cpp) are configured later, so hide the model controls.
-  if (onboardingModelGroup) onboardingModelGroup.classList.toggle('hidden', settingsOnly);
+  if (onboardingModelGroup) onboardingModelGroup.classList.remove('hidden');
   if (onboardingSubagentModel) onboardingSubagentModel.classList.toggle('hidden', isCustom);
   if (onboardingSubagentModelText) onboardingSubagentModelText.classList.toggle('hidden', !isCustom);
   if (onboardingDetectRow) onboardingDetectRow.classList.toggle('hidden', !isLocal);
@@ -255,31 +234,7 @@ async function onboardingFetchFirstModel(url) {
 // Detect available models for the selected local provider and populate the model control.
 async function onboardingDetectModels() {
   const prov = onboardingSubagentProvider ? onboardingSubagentProvider.value : '';
-  if (prov === 'lmstudio_local') {
-    const endpoint = (onboardingSubagentEndpoint && onboardingSubagentEndpoint.value.trim()) || 'http://localhost:1234/v1';
-    setOnboardingModelStatus('Detecting LM Studio models...', false);
-    const models = await onboardingFetchModels(`/api/lmstudio/models?endpoint=${encodeURIComponent(endpoint)}`);
-    if (onboardingSubagentModel) {
-      onboardingSubagentModel.innerHTML = '';
-      if (!models.length) {
-        const opt = document.createElement('option');
-        opt.value = '';
-        opt.textContent = 'No LM Studio models found';
-        onboardingSubagentModel.appendChild(opt);
-      } else {
-        for (const name of models) {
-          const opt = document.createElement('option');
-          opt.value = name;
-          opt.textContent = name;
-          onboardingSubagentModel.appendChild(opt);
-        }
-        if (subagentProvider === 'lmstudio_local' && subagentModel && models.includes(subagentModel)) {
-          onboardingSubagentModel.value = subagentModel;
-        }
-      }
-    }
-    setOnboardingModelStatus(models.length ? `Found ${models.length} model(s).` : 'No models. Load a model and start LM Studio\'s server, then Detect.', !models.length);
-  } else if (prov === 'custom_openai') {
+  if (prov === 'custom_openai') {
     const endpoint = (onboardingSubagentEndpoint && onboardingSubagentEndpoint.value.trim()) || '';
     if (!endpoint) { setOnboardingModelStatus('Enter the server URL first.', true); return; }
     const key = (onboardingSubagentKey && onboardingSubagentKey.value.trim()) || '';
@@ -366,14 +321,7 @@ async function applyOnboardingSubagentChoice() {
   }
   subagentModel = chosenModel || cfg.defaultModel || '';
 
-  if (prov === 'lmstudio_local') {
-    lmstudioEndpoint = (onboardingSubagentEndpoint && onboardingSubagentEndpoint.value.trim()) || 'http://localhost:1234/v1';
-    localStorage.setItem('shadow_lmstudio_endpoint', lmstudioEndpoint);
-    if (!subagentModel) {
-      const m = await onboardingFetchFirstModel(`/api/lmstudio/models?endpoint=${encodeURIComponent(lmstudioEndpoint)}`);
-      if (m) subagentModel = m;
-    }
-  } else if (prov === 'custom_openai') {
+  if (prov === 'custom_openai') {
     customEndpoint = (onboardingSubagentEndpoint && onboardingSubagentEndpoint.value.trim()) || '';
     customApiKey = (onboardingSubagentKey && onboardingSubagentKey.value.trim()) || '';
     localStorage.setItem('shadow_custom_endpoint', customEndpoint);
@@ -608,45 +556,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  function setLmstudioStatus(msg, isError) {
-    if (!lmstudioStatus) return;
-    lmstudioStatus.textContent = msg;
-    lmstudioStatus.style.color = isError ? '#ff6b6b' : 'rgba(255,255,255,0.6)';
-  }
-
-  // Auto-detect models loaded in the user's LM Studio server and fill the picker.
-  async function refreshLmstudioModels(preferredModel) {
-    if (!selectSubagentModelLmstudioLocal) return;
-    const endpoint = (inputLmstudioEndpoint && inputLmstudioEndpoint.value.trim()) || lmstudioEndpoint || 'http://localhost:1234/v1';
-    const want = preferredModel || (subagentProvider === 'lmstudio_local' ? subagentModel : '') || selectSubagentModelLmstudioLocal.value;
-    setLmstudioStatus('Detecting LM Studio models…', false);
-    try {
-      const res = await fetchLocalApiWithTimeout(`/api/lmstudio/models?endpoint=${encodeURIComponent(endpoint)}`, {}, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      const models = (data && Array.isArray(data.models)) ? data.models : [];
-      selectSubagentModelLmstudioLocal.innerHTML = '';
-      if (!models.length) {
-        const opt = document.createElement('option');
-        opt.value = '';
-        opt.textContent = 'No LM Studio models found';
-        selectSubagentModelLmstudioLocal.appendChild(opt);
-        setLmstudioStatus((data && (data.error || data.hint)) ? (data.error || data.hint) : 'No models found. Load a model and start LM Studio\'s server, then Refresh.', true);
-        return;
-      }
-      for (const name of models) {
-        const opt = document.createElement('option');
-        opt.value = name;
-        opt.textContent = name;
-        selectSubagentModelLmstudioLocal.appendChild(opt);
-      }
-      if (want && models.includes(want)) selectSubagentModelLmstudioLocal.value = want;
-      setLmstudioStatus(`Found ${models.length} model${models.length === 1 ? '' : 's'}. Pick one and Save.`, false);
-    } catch (err) {
-      selectSubagentModelLmstudioLocal.innerHTML = '<option value="">No LM Studio models found</option>';
-      setLmstudioStatus('Could not reach LM Studio. Make sure its local server is running, then Refresh.', true);
-    }
-  }
-
   function setCustomStatus(msg, isError) {
     if (!customStatus) return;
     customStatus.textContent = msg;
@@ -685,333 +594,17 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // ----- Built-in llama.cpp manager -----
-  function fmtBytes(n) {
-    n = Number(n) || 0;
-    if (n >= 1073741824) return (n / 1073741824).toFixed(1) + ' GB';
-    if (n >= 1048576) return (n / 1048576).toFixed(0) + ' MB';
-    if (n >= 1024) return (n / 1024).toFixed(0) + ' KB';
-    return n + ' B';
-  }
-
-  function populateLlamacppModels(models, selected) {
-    if (!selectLlamacppModel) return;
-    // PowerShell ConvertTo-Json serializes a single-element array as a bare object, so coerce.
-    const list = Array.isArray(models) ? models : (models ? [models] : []);
-    selectLlamacppModel.innerHTML = '';
-    if (!list.length) {
-      const opt = document.createElement('option');
-      opt.value = ''; opt.textContent = 'No models downloaded yet';
-      selectLlamacppModel.appendChild(opt);
-      return;
-    }
-    for (const m of list) {
-      const name = (typeof m === 'string') ? m : m.name;
-      const sz = (m && m.sizeBytes) ? ` (${fmtBytes(m.sizeBytes)})` : '';
-      const opt = document.createElement('option');
-      opt.value = name; opt.textContent = name + sz;
-      selectLlamacppModel.appendChild(opt);
-    }
-    const want = selected || (subagentProvider === 'llamacpp_builtin' ? subagentModel : '');
-    if (want) selectLlamacppModel.value = want;
-  }
-
-  async function refreshLlamacppStatus() {
-    populateLlamacppCatalog();
-    try {
-      const res = await fetchLocalApiWithTimeout('/api/llamacpp/status', {}, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      if (!data || data.status !== 'success') return;
-      llamacppBackend = data.backend || '';
-      if (llamacppBackendBadge) llamacppBackendBadge.textContent = llamacppBackend ? `(GPU build: ${llamacppBackend.toUpperCase()})` : '';
-      if (llamacppBinaryStatus) llamacppBinaryStatus.textContent = data.binaryInstalled ? 'Installed.' : 'Not installed yet — click Install.';
-      populateLlamacppModels(data.models);
-      if (data.server && data.server.port) {
-        llamacppBuiltinBase = `http://127.0.0.1:${data.server.port}/v1`;
-        llamacppServerModel = data.server.model || '';
-        // Do NOT force the dropdown/ctx to the running server's values — that would revert the
-        // user's pending selection. The dropdown reflects the chosen model (subagentModel); the
-        // running model + ctx are shown in the status line and applied on the next (re)start.
-        if (inputLlamacppCtx && (typeof llamacppContextSize !== 'undefined') && llamacppContextSize) inputLlamacppCtx.value = llamacppContextSize;
-        const switchHint = (llamacppServerModel && subagentProvider === 'llamacpp_builtin' && subagentModel && subagentModel !== llamacppServerModel) ? ` — will switch to ${subagentModel} on next run` : '';
-        if (llamacppServerStatus) llamacppServerStatus.textContent = `Running: ${llamacppServerModel} on :${data.server.port} (ctx ${data.server.ctx})${data.server.listening ? '' : ' — loading...'}${switchHint}`;
-      } else {
-        llamacppBuiltinBase = '';
-        llamacppServerModel = '';
-        if (inputLlamacppCtx && (typeof llamacppContextSize !== 'undefined') && llamacppContextSize) inputLlamacppCtx.value = llamacppContextSize;
-        if (llamacppServerStatus) llamacppServerStatus.textContent = 'Stopped. Starts automatically when a subagent runs.';
-      }
-    } catch (e) {
-      if (llamacppBinaryStatus) llamacppBinaryStatus.textContent = 'Could not reach the backend.';
-    }
-  }
-
-  async function llamacppInstallBinary() {
-    if (!btnLlamacppInstall) return;
-    btnLlamacppInstall.disabled = true;
-    if (llamacppBinaryStatus) llamacppBinaryStatus.textContent = 'Starting download...';
-    try {
-      const res = await fetchLocalApiWithTimeout('/api/llamacpp/binary/install', { method: 'POST' }, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Install failed to start.');
-      let polls = 0;
-      const timer = setInterval(async () => {
-        polls++;
-        try {
-          const sres = await fetchLocalApiWithTimeout('/api/llamacpp/binary/status', {}, LOCAL_API_TIMEOUT_MS);
-          const s = await readBootResponseJsonWithTimeout(sres, LOCAL_API_TIMEOUT_MS);
-          if (s && s.state === 'installing') {
-            const pct = (s.total > 0) ? ` ${Math.floor(s.bytes / s.total * 100)}%` : '';
-            if (llamacppBinaryStatus) llamacppBinaryStatus.textContent = `Downloading llama.cpp (${(llamacppBackend || '').toUpperCase()})...${pct}`;
-          } else if (s && s.state === 'installed') {
-            clearInterval(timer); btnLlamacppInstall.disabled = false;
-            if (llamacppBinaryStatus) llamacppBinaryStatus.textContent = 'Installed.';
-            refreshLlamacppStatus();
-          } else if (s && s.state === 'error') {
-            clearInterval(timer); btnLlamacppInstall.disabled = false;
-            if (llamacppBinaryStatus) llamacppBinaryStatus.textContent = `Install failed: ${s.error || 'unknown error'}`;
-          }
-        } catch (e) {}
-        if (polls > 600) { clearInterval(timer); btnLlamacppInstall.disabled = false; }
-      }, 1500);
-    } catch (err) {
-      btnLlamacppInstall.disabled = false;
-      if (llamacppBinaryStatus) llamacppBinaryStatus.textContent = `Install failed: ${err.message}`;
-    }
-  }
-
-  // Curated, current model catalog (repo IDs verified live via the Hugging Face API, May 2026).
-  // Stores repo + a global quant pick; the backend resolves the exact .gguf so filenames never
-  // go stale. Anything newer is reachable via the Hugging Face search box.
-  const LLAMACPP_MODEL_CATALOG = [
-    { group: 'Featherweight (CPU / iGPU / <=6 GB)', models: [
-      { repo: 'unsloth/Qwen3.5-0.8B-GGUF', label: 'Qwen3.5 0.8B (tiny, fastest)' },
-      { repo: 'unsloth/gemma-4-E2B-it-GGUF', label: 'Gemma 4 E2B (~2B, 140+ languages)' },
-      { repo: 'unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF', label: 'DeepSeek-R1 Distill 1.5B (reasoning)' },
-      { repo: 'unsloth/Qwen3.5-4B-GGUF', label: 'Qwen3.5 4B (great tiny all-rounder)' },
-      { repo: 'unsloth/Phi-4-mini-instruct-GGUF', label: 'Phi-4-mini 3.8B' },
-      { repo: 'unsloth/gemma-4-E4B-it-GGUF', label: 'Gemma 4 E4B (~4B, vision-capable)' }
-    ]},
-    { group: 'Balanced (8-12 GB - recommended for your GPU)', models: [
-      { repo: 'unsloth/Qwen3.5-9B-GGUF', label: 'Qwen3.5 9B (solid all-rounder)' },
-      { repo: 'unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF', label: 'DeepSeek-R1 Distill 7B (reasoning)' },
-      { repo: 'unsloth/DeepSeek-R1-Distill-Llama-8B-GGUF', label: 'DeepSeek-R1 Distill Llama 8B' },
-      { repo: 'unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF', label: 'Qwen3 30B-A3B MoE (3B active, fast)' },
-      { repo: 'unsloth/Qwen3.6-35B-A3B-GGUF', label: 'Qwen3.6 35B-A3B MoE (3B active, smart) - top pick' },
-      { repo: 'unsloth/gemma-4-26B-A4B-it-GGUF', label: 'Gemma 4 26B-A4B MoE (4B active, vision)' }
-    ]},
-    { group: 'Quality (16-24 GB)', models: [
-      { repo: 'unsloth/DeepSeek-R1-Distill-Qwen-14B-GGUF', label: 'DeepSeek-R1 Distill 14B (reasoning)' },
-      { repo: 'unsloth/Qwen3.6-27B-GGUF', label: 'Qwen3.6 27B (best dense coder)' },
-      { repo: 'unsloth/gemma-4-31B-it-GGUF', label: 'Gemma 4 31B (dense, vision)' },
-      { repo: 'MaziyarPanahi/phi-4-GGUF', label: 'Phi-4 14B' }
-    ]},
-    { group: 'Coding', models: [
-      { repo: 'unsloth/Qwen3-Coder-Next-GGUF', label: 'Qwen3-Coder-Next (agentic coding)' }
-    ]},
-    { group: 'Large / workstation (24-48 GB VRAM)', models: [
-      { repo: 'unsloth/DeepSeek-R1-Distill-Qwen-32B-GGUF', label: 'DeepSeek-R1 Distill 32B (reasoning)' },
-      { repo: 'unsloth/DeepSeek-R1-Distill-Llama-70B-GGUF', label: 'DeepSeek-R1 Distill Llama 70B (dense)' }
-    ]},
-    { group: 'Huge MoE - lots of RAM + CPU offload (96 GB+ system RAM)', models: [
-      { repo: 'unsloth/MiniMax-M2.7-GGUF', label: 'MiniMax M2.7 (~230B MoE, Apache-2.0)' },
-      { repo: 'unsloth/GLM-5.1-GGUF', label: 'GLM-5.1 (frontier MoE, MIT)' },
-      { repo: 'unsloth/Kimi-K2.6-GGUF', label: 'Kimi K2.6 (~1T MoE - extreme rigs)' }
-    ]}
-  ];
-
-  function populateLlamacppCatalog() {
-    if (!selectLlamacppCatalog || selectLlamacppCatalog.options.length) return; // populate once
-    for (const g of LLAMACPP_MODEL_CATALOG) {
-      const og = document.createElement('optgroup');
-      og.label = g.group;
-      for (const m of g.models) {
-        const opt = document.createElement('option');
-        opt.value = m.repo;
-        opt.textContent = m.label;
-        og.appendChild(opt);
-      }
-      selectLlamacppCatalog.appendChild(og);
-    }
-    updateLlamacppCatalogNote();
-  }
-
-  async function updateLlamacppCatalogNote() {
-    if (!llamacppCatalogNote || !selectLlamacppCatalog) return;
-    const repo = selectLlamacppCatalog.value;
-    if (!repo) { llamacppCatalogNote.textContent = ''; return; }
-    const quant = (selectLlamacppQuant && selectLlamacppQuant.value) ? selectLlamacppQuant.value : 'Q4_K_M';
-    llamacppCatalogNote.textContent = `Repo: ${repo} - checking download size...`;
-    try {
-      const res = await fetchLocalApiWithTimeout(`/api/llamacpp/model-size?repo=${encodeURIComponent(repo)}&quant=${encodeURIComponent(quant)}`, {}, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      if (data && data.status === 'success' && data.bytes > 0) {
-        const gb = (data.bytes / 1073741824).toFixed(1);
-        const parts = (data.parts && data.parts > 1) ? `, ${data.parts} parts` : '';
-        let vramHint = '';
-        const gbNum = parseFloat(gb);
-        if (gbNum <= 6) vramHint = ' - fits ~6-8 GB VRAM';
-        else if (gbNum <= 12) vramHint = ' - needs ~12-16 GB VRAM (or MoE CPU offload)';
-        else if (gbNum <= 24) vramHint = ' - needs ~24 GB VRAM (or MoE CPU offload)';
-        else vramHint = ' - big: needs 48 GB+ VRAM or lots of RAM + MoE offload';
-        llamacppCatalogNote.textContent = `~${gb} GB download (${quant}${parts})${vramHint}`;
-      } else {
-        llamacppCatalogNote.textContent = `Repo: ${repo}`;
-      }
-    } catch (e) {
-      llamacppCatalogNote.textContent = `Repo: ${repo}`;
-    }
-  }
-
-  // Which repo to download: a Hugging Face search selection takes priority, else the catalog.
-  function llamacppSelectedRepo() {
-    if (selectLlamacppSearchResults && selectLlamacppSearchResults.value) return selectLlamacppSearchResults.value;
-    if (selectLlamacppCatalog && selectLlamacppCatalog.value) return selectLlamacppCatalog.value;
-    return '';
-  }
-
-  async function runLlamacppDownload(payload, btn) {
-    if (btn) btn.disabled = true;
-    if (llamacppDownloadStatus) llamacppDownloadStatus.textContent = 'Starting download...';
-    try {
-      const res = await fetchLocalApiWithTimeout('/api/llamacpp/models/download', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-      }, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Download failed to start.');
-      let polls = 0;
-      const timer = setInterval(async () => {
-        polls++;
-        try {
-          const sres = await fetchLocalApiWithTimeout('/api/llamacpp/models/download-status', {}, LOCAL_API_TIMEOUT_MS);
-          const s = await readBootResponseJsonWithTimeout(sres, LOCAL_API_TIMEOUT_MS);
-          const d = s && s.download;
-          if (d && (d.state === 'downloading' || d.state === 'starting')) {
-            const part = (d.fileCount && d.fileCount > 1) ? ` (part ${d.fileIndex || 1}/${d.fileCount})` : '';
-            const pct = (d.total > 0) ? ` ${Math.floor(d.bytes / d.total * 100)}% of ${fmtBytes(d.total)}` : ` ${fmtBytes(d.bytes)}`;
-            if (llamacppDownloadStatus) llamacppDownloadStatus.textContent = `Downloading${part}...${pct}`;
-          } else if (d && d.state === 'done') {
-            clearInterval(timer); if (btn) btn.disabled = false;
-            if (llamacppDownloadStatus) llamacppDownloadStatus.textContent = 'Downloaded.';
-            refreshLlamacppStatus();
-          } else if (d && d.state === 'error') {
-            clearInterval(timer); if (btn) btn.disabled = false;
-            if (llamacppDownloadStatus) llamacppDownloadStatus.textContent = `Download failed: ${d.error || 'unknown error'}`;
-          }
-        } catch (e) {}
-        if (polls > 4000) { clearInterval(timer); if (btn) btn.disabled = false; }
-      }, 1500);
-    } catch (err) {
-      if (btn) btn.disabled = false;
-      if (llamacppDownloadStatus) llamacppDownloadStatus.textContent = `Download failed: ${err.message}`;
-    }
-  }
-
-  async function llamacppDownloadModel() {
-    const repo = llamacppSelectedRepo();
-    if (!repo) { if (llamacppDownloadStatus) llamacppDownloadStatus.textContent = 'Choose a model first.'; return; }
-    const quant = (selectLlamacppQuant && selectLlamacppQuant.value) ? selectLlamacppQuant.value : 'Q4_K_M';
-    runLlamacppDownload({ repo, quant }, btnLlamacppDownload);
-  }
-
-  async function llamacppDownloadManual() {
-    const repo = inputLlamacppRepo ? inputLlamacppRepo.value.trim() : '';
-    const file = inputLlamacppFile ? inputLlamacppFile.value.trim() : '';
-    if (!repo || !file) { if (llamacppDownloadStatus) llamacppDownloadStatus.textContent = 'Enter a repo and exact .gguf filename.'; return; }
-    runLlamacppDownload({ repo, file }, btnLlamacppDownloadManual);
-  }
-
-  async function llamacppSearchHf() {
-    const q = inputLlamacppSearch ? inputLlamacppSearch.value.trim() : '';
-    if (!q) return;
-    if (selectLlamacppSearchResults) selectLlamacppSearchResults.innerHTML = '<option value="">Searching...</option>';
-    try {
-      const res = await fetchLocalApiWithTimeout(`/api/llamacpp/hf-search?q=${encodeURIComponent(q)}`, {}, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      const rawResults = data ? data.results : null;
-      const results = Array.isArray(rawResults) ? rawResults : (rawResults ? [rawResults] : []);
-      if (!selectLlamacppSearchResults) return;
-      selectLlamacppSearchResults.innerHTML = '';
-      if (!results.length) {
-        const opt = document.createElement('option');
-        opt.value = ''; opt.textContent = 'No GGUF repos found';
-        selectLlamacppSearchResults.appendChild(opt);
-        return;
-      }
-      const head = document.createElement('option');
-      head.value = ''; head.textContent = `${results.length} results - pick one, then Download`;
-      selectLlamacppSearchResults.appendChild(head);
-      for (const r of results) {
-        const opt = document.createElement('option');
-        opt.value = r.repo;
-        opt.textContent = r.repo + (r.downloads ? ` (${Number(r.downloads).toLocaleString()} downloads)` : '');
-        selectLlamacppSearchResults.appendChild(opt);
-      }
-    } catch (e) {
-      if (selectLlamacppSearchResults) selectLlamacppSearchResults.innerHTML = '<option value="">Search failed</option>';
-    }
-  }
-
-  async function llamacppDeleteModel() {
-    if (!selectLlamacppModel || !selectLlamacppModel.value) return;
-    const name = selectLlamacppModel.value;
-    if (!confirm(`Delete model ${name}? This frees disk space.`)) return;
-    try {
-      await fetchLocalApiWithTimeout('/api/llamacpp/models/delete', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name })
-      }, LOCAL_API_TIMEOUT_MS);
-      refreshLlamacppStatus();
-    } catch (e) {}
-  }
-
-  async function llamacppStartServer() {
-    if (!selectLlamacppModel || !selectLlamacppModel.value) { if (llamacppServerStatus) llamacppServerStatus.textContent = 'Pick a model first.'; return; }
-    const model = selectLlamacppModel.value;
-    const ctx = inputLlamacppCtx ? (parseInt(inputLlamacppCtx.value, 10) || 8192) : 8192;
-    if (btnLlamacppStart) btnLlamacppStart.disabled = true;
-    if (llamacppServerStatus) llamacppServerStatus.textContent = 'Starting server...';
-    try {
-      const res = await fetchLocalApiWithTimeout('/api/llamacpp/start', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, ctx })
-      }, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Failed to start.');
-      llamacppBuiltinBase = data.baseUrl || '';
-      llamacppServerModel = data.model || model;
-      // Use this model for background subagents.
-      subagentModel = llamacppServerModel;
-      localStorage.setItem('shadow_subagent_model', subagentModel);
-      if (llamacppServerStatus) llamacppServerStatus.textContent = `Loading ${model} (ctx ${ctx})...`;
-      setTimeout(refreshLlamacppStatus, 2000);
-    } catch (err) {
-      if (llamacppServerStatus) llamacppServerStatus.textContent = `Start failed: ${err.message}`;
-    } finally {
-      if (btnLlamacppStart) btnLlamacppStart.disabled = false;
-    }
-  }
-
-  async function llamacppStopServer() {
-    try { await fetchLocalApiWithTimeout('/api/llamacpp/stop', { method: 'POST' }, LOCAL_API_TIMEOUT_MS); } catch (e) {}
-    llamacppBuiltinBase = '';
-    llamacppServerModel = '';
-    if (llamacppServerStatus) llamacppServerStatus.textContent = 'Stopped.';
-    refreshLlamacppStatus();
-  }
-
   function updateProviderUI() {
     groupMinimaxKey.style.display = 'none';
     groupMoonshotKey.style.display = 'none';
     groupOllamaSettings.style.display = 'none';
-    if (groupLmstudioLocalSettings) groupLmstudioLocalSettings.style.display = 'none';
     if (groupCustomSettings) groupCustomSettings.style.display = 'none';
-    if (groupLlamacppBuiltinSettings) groupLlamacppBuiltinSettings.style.display = 'none';
     groupOpenaiCodexAuth.style.display = 'none';
     selectSubagentModelGemini.style.display = 'none';
     selectSubagentModelOpenaiCodex.style.display = 'none';
     selectSubagentModelMinimax.style.display = 'none';
     selectSubagentModelMoonshot.style.display = 'none';
     selectSubagentModelOllama.style.display = 'none';
-    if (selectSubagentModelLmstudioLocal) selectSubagentModelLmstudioLocal.style.display = 'none';
 
     const prov = selectSubagentProvider.value;
     if (prov === 'gemini') selectSubagentModelGemini.style.display = 'block';
@@ -1023,12 +616,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (prov === 'minimax') { groupMinimaxKey.style.display = 'block'; selectSubagentModelMinimax.style.display = 'block'; }
     if (prov === 'moonshot') { groupMoonshotKey.style.display = 'block'; selectSubagentModelMoonshot.style.display = 'block'; }
     if (prov === 'ollama') { groupOllamaSettings.style.display = 'block'; selectSubagentModelOllama.style.display = 'block'; }
-    if (prov === 'lmstudio_local') {
-      if (groupLmstudioLocalSettings) groupLmstudioLocalSettings.style.display = 'block';
-      if (selectSubagentModelLmstudioLocal) selectSubagentModelLmstudioLocal.style.display = 'block';
-      if (inputLmstudioEndpoint) inputLmstudioEndpoint.value = lmstudioEndpoint;
-      refreshLmstudioModels();
-    }
     if (prov === 'custom_openai') {
       if (groupCustomSettings) groupCustomSettings.style.display = 'block';
       if (inputCustomEndpoint) inputCustomEndpoint.value = customEndpoint;
@@ -1036,312 +623,15 @@ window.addEventListener('DOMContentLoaded', async () => {
       if (inputCustomModel && subagentProvider === 'custom_openai' && subagentModel) inputCustomModel.value = subagentModel;
       if (customEndpoint) refreshCustomModels();
     }
-    if (prov === 'llamacpp_builtin') {
-      if (groupLlamacppBuiltinSettings) groupLlamacppBuiltinSettings.style.display = 'block';
-      refreshLlamacppStatus();
-    }
     updateCodexReasoningUI();
   }
   updateProviderUI();
   selectSubagentProvider.addEventListener('change', updateProviderUI);
-  if (btnRefreshLmstudioModels) {
-    btnRefreshLmstudioModels.addEventListener('click', () => {
-      if (inputLmstudioEndpoint) lmstudioEndpoint = inputLmstudioEndpoint.value.trim() || 'http://localhost:1234/v1';
-      refreshLmstudioModels();
-    });
-  }
   if (btnRefreshCustomModels) {
     btnRefreshCustomModels.addEventListener('click', () => {
       if (inputCustomEndpoint) customEndpoint = inputCustomEndpoint.value.trim();
       if (inputCustomApiKey) customApiKey = inputCustomApiKey.value.trim();
       refreshCustomModels();
-    });
-  }
-  if (btnLlamacppInstall) btnLlamacppInstall.addEventListener('click', llamacppInstallBinary);
-  if (btnLlamacppDownload) btnLlamacppDownload.addEventListener('click', llamacppDownloadModel);
-  if (btnLlamacppDownloadManual) btnLlamacppDownloadManual.addEventListener('click', llamacppDownloadManual);
-  if (btnLlamacppSearch) btnLlamacppSearch.addEventListener('click', llamacppSearchHf);
-  if (selectLlamacppCatalog) selectLlamacppCatalog.addEventListener('change', updateLlamacppCatalogNote);
-  if (selectLlamacppQuant) selectLlamacppQuant.addEventListener('change', updateLlamacppCatalogNote);
-  if (btnLlamacppDeleteModel) btnLlamacppDeleteModel.addEventListener('click', llamacppDeleteModel);
-  if (btnLlamacppStart) btnLlamacppStart.addEventListener('click', llamacppStartServer);
-  if (btnLlamacppStop) btnLlamacppStop.addEventListener('click', llamacppStopServer);
-  // Local Voice STT (experimental) wiring
-  if (btnVoiceSttInstall) btnVoiceSttInstall.addEventListener('click', voiceSttInstall);
-  if (btnVoiceSttDownload) btnVoiceSttDownload.addEventListener('click', voiceSttDownload);
-  if (btnVoiceSttTest) btnVoiceSttTest.addEventListener('click', voiceSttTest);
-  refreshVoiceSttStatus();
-  // Local Voice TTS (Qwen3-TTS) wiring
-  if (btnVoiceTtsInstall) btnVoiceTtsInstall.addEventListener('click', voiceTtsInstall);
-  if (btnVoiceTtsDownload) btnVoiceTtsDownload.addEventListener('click', voiceTtsDownload);
-  if (btnVoiceTtsTest) btnVoiceTtsTest.addEventListener('click', voiceTtsTest);
-  if (selectVoiceTtsVoiceMode) selectVoiceTtsVoiceMode.addEventListener('change', updateVoiceTtsModeUI);
-  if (btnVoiceTtsDesignDownload) btnVoiceTtsDesignDownload.addEventListener('click', voiceTtsDesignDownload);
-  if (btnVoiceTtsTranscribe) btnVoiceTtsTranscribe.addEventListener('click', voiceTtsTranscribe);
-  updateVoiceTtsModeUI();
-  refreshVoiceTtsStatus();
-
-  async function voiceTtsTranscribe() {
-    if (!btnVoiceTtsTranscribe) return;
-    const wav = (inputVoiceTtsRefWav && inputVoiceTtsRefWav.value || '').trim();
-    if (!wav) { if (voiceTtsTranscribeStatus) voiceTtsTranscribeStatus.textContent = 'Enter the .wav path first.'; return; }
-    btnVoiceTtsTranscribe.disabled = true;
-    if (voiceTtsTranscribeStatus) voiceTtsTranscribeStatus.textContent = 'Transcribing the sample with local STT...';
-    try {
-      const res = await fetchLocalApiWithTimeout('/api/voice/stt/transcribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wav, model: (selectVoiceSttModel && selectVoiceSttModel.value) || 'parakeet' }) }, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Transcribe failed to start.');
-      let polls = 0;
-      const t = setInterval(async () => {
-        polls++;
-        try {
-          const r = await fetchLocalApiWithTimeout('/api/voice/stt/transcribe-result', {}, LOCAL_API_TIMEOUT_MS);
-          const s = await readBootResponseJsonWithTimeout(r, LOCAL_API_TIMEOUT_MS);
-          if (s && s.done) {
-            clearInterval(t); btnVoiceTtsTranscribe.disabled = false;
-            if (inputVoiceTtsRefText) inputVoiceTtsRefText.value = s.transcript || '';
-            if (voiceTtsTranscribeStatus) voiceTtsTranscribeStatus.textContent = s.transcript ? 'Transcript filled in - tweak it if needed.' : 'No speech detected in the sample.';
-          } else if (s && s.error) {
-            clearInterval(t); btnVoiceTtsTranscribe.disabled = false; if (voiceTtsTranscribeStatus) voiceTtsTranscribeStatus.textContent = `Transcribe failed: ${s.error}`;
-          }
-        } catch (e) {}
-        if (polls > 40) { clearInterval(t); btnVoiceTtsTranscribe.disabled = false; if (voiceTtsTranscribeStatus && voiceTtsTranscribeStatus.textContent.indexOf('filled') < 0) voiceTtsTranscribeStatus.textContent = 'Timed out - check the wav path / that STT is installed.'; }
-      }, 1000);
-    } catch (err) { btnVoiceTtsTranscribe.disabled = false; if (voiceTtsTranscribeStatus) voiceTtsTranscribeStatus.textContent = `Transcribe failed: ${err.message}`; }
-  }
-
-  function updateVoiceTtsModeUI() {
-    const mode = (selectVoiceTtsVoiceMode && selectVoiceTtsVoiceMode.value) || 'default';
-    if (voiceTtsCloneRow) voiceTtsCloneRow.style.display = (mode === 'clone') ? 'flex' : 'none';
-    if (voiceTtsDesignRow) voiceTtsDesignRow.style.display = (mode === 'design') ? 'flex' : 'none';
-  }
-
-  async function voiceTtsDesignDownload() {
-    if (!btnVoiceTtsDesignDownload) return;
-    btnVoiceTtsDesignDownload.disabled = true;
-    const tier = (selectVoiceTtsModel && selectVoiceTtsModel.value) || '1.7b';
-    if (voiceTtsDesignStatus) voiceTtsDesignStatus.textContent = 'Checking...';
-    try {
-      // already present?
-      const sres = await fetchLocalApiWithTimeout('/api/voice/tts/status', {}, LOCAL_API_TIMEOUT_MS);
-      const sdata = await readBootResponseJsonWithTimeout(sres, LOCAL_API_TIMEOUT_MS);
-      if (sdata && sdata.designInstalled) { btnVoiceTtsDesignDownload.disabled = false; if (voiceTtsDesignStatus) voiceTtsDesignStatus.textContent = 'Voice-design model ready.'; return; }
-      const res = await fetchLocalApiWithTimeout('/api/voice/tts/model/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: tier, variant: 'voicedesign' }) }, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Download failed to start.');
-      if (voiceTtsDesignStatus) voiceTtsDesignStatus.textContent = `Downloading ${tier} voice-design (~2 GB)...`;
-      let polls = 0;
-      const t = setInterval(async () => {
-        polls++;
-        try {
-          const r = await fetchLocalApiWithTimeout('/api/voice/tts/model/download-status', {}, LOCAL_API_TIMEOUT_MS);
-          const s = await readBootResponseJsonWithTimeout(r, LOCAL_API_TIMEOUT_MS);
-          const d = s && s.download;
-          if (d && (d.state === 'downloading-voice' || d.state === 'downloading-codec' || d.state === 'starting')) { if (voiceTtsDesignStatus) voiceTtsDesignStatus.textContent = `${d.state.replace('-', ' ')}...`; }
-          else if (d && d.state === 'done') { clearInterval(t); btnVoiceTtsDesignDownload.disabled = false; if (voiceTtsDesignStatus) voiceTtsDesignStatus.textContent = 'Voice-design model ready.'; }
-          else if (d && d.state === 'error') { clearInterval(t); btnVoiceTtsDesignDownload.disabled = false; if (voiceTtsDesignStatus) voiceTtsDesignStatus.textContent = `Download failed: ${d.error || 'unknown error'}`; }
-        } catch (e) {}
-        if (polls > 6000) { clearInterval(t); btnVoiceTtsDesignDownload.disabled = false; }
-      }, 1500);
-    } catch (err) { btnVoiceTtsDesignDownload.disabled = false; if (voiceTtsDesignStatus) voiceTtsDesignStatus.textContent = `Download failed: ${err.message}`; }
-  }
-
-  async function refreshVoiceSttStatus() {
-    try {
-      const res = await fetchLocalApiWithTimeout('/api/voice/stt/status', {}, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      if (!data || data.status !== 'success') return;
-      if (voiceSttInstallStatus) voiceSttInstallStatus.textContent = data.cliInstalled ? 'Engine installed.' : 'Not installed yet.';
-      let models = data.models; if (!Array.isArray(models)) models = models ? [models] : [];
-      if (voiceSttModelStatus) voiceSttModelStatus.textContent = models.length ? `Model ready: ${models.join(', ')}` : 'No model downloaded yet.';
-    } catch (e) {}
-  }
-
-  async function voiceSttInstall() {
-    if (!btnVoiceSttInstall) return;
-    btnVoiceSttInstall.disabled = true;
-    if (voiceSttInstallStatus) voiceSttInstallStatus.textContent = 'Starting download (~300 MB)...';
-    try {
-      const res = await fetchLocalApiWithTimeout('/api/voice/stt/install', { method: 'POST' }, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Install failed to start.');
-      let polls = 0;
-      const t = setInterval(async () => {
-        polls++;
-        try {
-          const r = await fetchLocalApiWithTimeout('/api/voice/stt/install-status', {}, LOCAL_API_TIMEOUT_MS);
-          const s = await readBootResponseJsonWithTimeout(r, LOCAL_API_TIMEOUT_MS);
-          if (s && s.state === 'installing') { if (voiceSttInstallStatus) voiceSttInstallStatus.textContent = 'Downloading / extracting the speech engine...'; }
-          else if (s && s.state === 'installed') { clearInterval(t); btnVoiceSttInstall.disabled = false; if (voiceSttInstallStatus) voiceSttInstallStatus.textContent = 'Engine installed.'; }
-          else if (s && s.state === 'error') { clearInterval(t); btnVoiceSttInstall.disabled = false; if (voiceSttInstallStatus) voiceSttInstallStatus.textContent = `Install failed: ${s.error || 'unknown error'}`; }
-        } catch (e) {}
-        if (polls > 600) { clearInterval(t); btnVoiceSttInstall.disabled = false; }
-      }, 1500);
-    } catch (err) { btnVoiceSttInstall.disabled = false; if (voiceSttInstallStatus) voiceSttInstallStatus.textContent = `Install failed: ${err.message}`; }
-  }
-
-  async function voiceSttDownload() {
-    if (!btnVoiceSttDownload) return;
-    btnVoiceSttDownload.disabled = true;
-    const sttModel = (selectVoiceSttModel && selectVoiceSttModel.value) || 'parakeet';
-    if (voiceSttModelStatus) voiceSttModelStatus.textContent = 'Checking...';
-    // Idempotent per-model: skip if the SELECTED model is already on disk (re-extraction briefly
-    // leaves the folder incomplete and breaks a test clicked during that window).
-    try {
-      const sres = await fetchLocalApiWithTimeout('/api/voice/stt/status', {}, LOCAL_API_TIMEOUT_MS);
-      const sdata = await readBootResponseJsonWithTimeout(sres, LOCAL_API_TIMEOUT_MS);
-      let existing = sdata && sdata.models; if (!Array.isArray(existing)) existing = existing ? [existing] : [];
-      if (existing.some(m => String(m).toLowerCase().indexOf(sttModel) >= 0)) { btnVoiceSttDownload.disabled = false; if (voiceSttModelStatus) voiceSttModelStatus.textContent = `${sttModel} already downloaded.`; return; }
-    } catch (e) {}
-    if (voiceSttModelStatus) voiceSttModelStatus.textContent = `Starting ${sttModel} download (Whisper is ~1.5 GB)...`;
-    try {
-      const res = await fetchLocalApiWithTimeout('/api/voice/stt/model/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: sttModel }) }, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Download failed to start.');
-      let polls = 0;
-      const t = setInterval(async () => {
-        polls++;
-        try {
-          const r = await fetchLocalApiWithTimeout('/api/voice/stt/model/download-status', {}, LOCAL_API_TIMEOUT_MS);
-          const s = await readBootResponseJsonWithTimeout(r, LOCAL_API_TIMEOUT_MS);
-          const d = s && s.download;
-          if (d && (d.state === 'downloading' || d.state === 'starting' || d.state === 'extracting')) { if (voiceSttModelStatus) voiceSttModelStatus.textContent = `${d.state}...`; }
-          else if (d && d.state === 'done') { clearInterval(t); btnVoiceSttDownload.disabled = false; if (voiceSttModelStatus) voiceSttModelStatus.textContent = 'Model downloaded.'; refreshVoiceSttStatus(); }
-          else if (d && d.state === 'error') { clearInterval(t); btnVoiceSttDownload.disabled = false; if (voiceSttModelStatus) voiceSttModelStatus.textContent = `Download failed: ${d.error || 'unknown error'}`; }
-        } catch (e) {}
-        if (polls > 4000) { clearInterval(t); btnVoiceSttDownload.disabled = false; }
-      }, 1500);
-    } catch (err) { btnVoiceSttDownload.disabled = false; if (voiceSttModelStatus) voiceSttModelStatus.textContent = `Download failed: ${err.message}`; }
-  }
-
-  async function voiceSttTest() {
-    if (!btnVoiceSttTest) return;
-    btnVoiceSttTest.disabled = true;
-    if (voiceSttTestResult) voiceSttTestResult.textContent = 'Transcribing the sample clip...';
-    const sttModel = (selectVoiceSttModel && selectVoiceSttModel.value) || 'parakeet';
-    try {
-      const res = await fetchLocalApiWithTimeout('/api/voice/stt/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: sttModel }) }, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Test failed to start.');
-      let polls = 0;
-      const t = setInterval(async () => {
-        polls++;
-        try {
-          const r = await fetchLocalApiWithTimeout('/api/voice/stt/test-result', {}, LOCAL_API_TIMEOUT_MS);
-          const s = await readBootResponseJsonWithTimeout(r, LOCAL_API_TIMEOUT_MS);
-          if (s && s.done) { clearInterval(t); btnVoiceSttTest.disabled = false; if (voiceSttTestResult) voiceSttTestResult.textContent = `Transcribed: "${s.transcript}"`; }
-        } catch (e) {}
-        if (polls > 40) { clearInterval(t); btnVoiceSttTest.disabled = false; if (voiceSttTestResult && voiceSttTestResult.textContent.indexOf('Transcribed') !== 0) voiceSttTestResult.textContent = 'No result yet — make sure the engine + model are installed (this also fails if the model is still loading).'; }
-      }, 1500);
-    } catch (err) { btnVoiceSttTest.disabled = false; if (voiceSttTestResult) voiceSttTestResult.textContent = `Test failed: ${err.message}`; }
-  }
-
-  async function refreshVoiceTtsStatus() {
-    try {
-      const res = await fetchLocalApiWithTimeout('/api/voice/tts/status', {}, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      if (!data || data.status !== 'success') return;
-      if (voiceTtsInstallStatus) voiceTtsInstallStatus.textContent = data.engineInstalled ? `Engine installed (${data.backend}).` : `Not installed (will use ${data.backend}).`;
-      let models = data.models; if (!Array.isArray(models)) models = models ? [models] : [];
-      if (voiceTtsModelStatus) voiceTtsModelStatus.textContent = (models.length && data.codecInstalled) ? `Voice ready: ${models.join(', ')}` : (models.length ? 'Voice present, codec missing.' : 'No voice model yet.');
-    } catch (e) {}
-  }
-
-  async function voiceTtsInstall() {
-    if (!btnVoiceTtsInstall) return;
-    btnVoiceTtsInstall.disabled = true;
-    if (voiceTtsInstallStatus) voiceTtsInstallStatus.textContent = 'Starting engine download...';
-    try {
-      const res = await fetchLocalApiWithTimeout('/api/voice/tts/install', { method: 'POST' }, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Install failed to start.');
-      let polls = 0;
-      const t = setInterval(async () => {
-        polls++;
-        try {
-          const r = await fetchLocalApiWithTimeout('/api/voice/tts/install-status', {}, LOCAL_API_TIMEOUT_MS);
-          const s = await readBootResponseJsonWithTimeout(r, LOCAL_API_TIMEOUT_MS);
-          const i = s && s.install;
-          if (i && (i.state === 'downloading' || i.state === 'extracting' || i.state === 'starting')) { if (voiceTtsInstallStatus) voiceTtsInstallStatus.textContent = `${i.state}...`; }
-          else if (i && i.state === 'installed') { clearInterval(t); btnVoiceTtsInstall.disabled = false; if (voiceTtsInstallStatus) voiceTtsInstallStatus.textContent = 'Engine installed.'; refreshVoiceTtsStatus(); }
-          else if (i && i.state === 'error') { clearInterval(t); btnVoiceTtsInstall.disabled = false; if (voiceTtsInstallStatus) voiceTtsInstallStatus.textContent = `Install failed: ${i.error || 'unknown error'}`; }
-        } catch (e) {}
-        if (polls > 600) { clearInterval(t); btnVoiceTtsInstall.disabled = false; }
-      }, 1500);
-    } catch (err) { btnVoiceTtsInstall.disabled = false; if (voiceTtsInstallStatus) voiceTtsInstallStatus.textContent = `Install failed: ${err.message}`; }
-  }
-
-  async function voiceTtsDownload() {
-    if (!btnVoiceTtsDownload) return;
-    btnVoiceTtsDownload.disabled = true;
-    if (voiceTtsModelStatus) voiceTtsModelStatus.textContent = 'Checking...';
-    const tier = (selectVoiceTtsModel && selectVoiceTtsModel.value) || '1.7b';
-    try {
-      const res = await fetchLocalApiWithTimeout('/api/voice/tts/model/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: tier }) }, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Download failed to start.');
-      if (voiceTtsModelStatus) voiceTtsModelStatus.textContent = `Downloading ${tier} voice (~1-2.5 GB)...`;
-      let polls = 0;
-      const t = setInterval(async () => {
-        polls++;
-        try {
-          const r = await fetchLocalApiWithTimeout('/api/voice/tts/model/download-status', {}, LOCAL_API_TIMEOUT_MS);
-          const s = await readBootResponseJsonWithTimeout(r, LOCAL_API_TIMEOUT_MS);
-          const d = s && s.download;
-          if (d && (d.state === 'downloading-voice' || d.state === 'downloading-codec' || d.state === 'starting')) { if (voiceTtsModelStatus) voiceTtsModelStatus.textContent = `${d.state.replace('-', ' ')}...`; }
-          else if (d && d.state === 'done') { clearInterval(t); btnVoiceTtsDownload.disabled = false; if (voiceTtsModelStatus) voiceTtsModelStatus.textContent = 'Voice model downloaded.'; refreshVoiceTtsStatus(); }
-          else if (d && d.state === 'error') { clearInterval(t); btnVoiceTtsDownload.disabled = false; if (voiceTtsModelStatus) voiceTtsModelStatus.textContent = `Download failed: ${d.error || 'unknown error'}`; }
-        } catch (e) {}
-        if (polls > 6000) { clearInterval(t); btnVoiceTtsDownload.disabled = false; }
-      }, 1500);
-    } catch (err) { btnVoiceTtsDownload.disabled = false; if (voiceTtsModelStatus) voiceTtsModelStatus.textContent = `Download failed: ${err.message}`; }
-  }
-
-  async function voiceTtsTest() {
-    if (!btnVoiceTtsTest) return;
-    btnVoiceTtsTest.disabled = true;
-    if (voiceTtsTestResult) voiceTtsTestResult.textContent = 'Synthesizing (first run loads the model, ~10-20s)...';
-    const text = (inputVoiceTtsText && inputVoiceTtsText.value) || 'Hello! This is a local Qwen 3 text to speech voice.';
-    const lang = (selectVoiceTtsLang && selectVoiceTtsLang.value) || 'auto';
-    const voiceMode = (selectVoiceTtsVoiceMode && selectVoiceTtsVoiceMode.value) || 'default';
-    const refWav = (inputVoiceTtsRefWav && inputVoiceTtsRefWav.value) || '';
-    const refText = (inputVoiceTtsRefText && inputVoiceTtsRefText.value) || '';
-    const instruct = (inputVoiceTtsInstruct && inputVoiceTtsInstruct.value) || '';
-    try {
-      const res = await fetchLocalApiWithTimeout('/api/voice/tts/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, lang, voiceMode, refWav, refText, instruct }) }, LOCAL_API_TIMEOUT_MS);
-      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
-      if (!data || data.status !== 'success') throw new Error((data && data.error) || 'Test failed to start.');
-      let polls = 0;
-      const t = setInterval(async () => {
-        polls++;
-        try {
-          const r = await fetchLocalApiWithTimeout('/api/voice/tts/test-result', {}, LOCAL_API_TIMEOUT_MS);
-          const s = await readBootResponseJsonWithTimeout(r, LOCAL_API_TIMEOUT_MS);
-          if (s && s.done) {
-            clearInterval(t); btnVoiceTtsTest.disabled = false;
-            if (voiceTtsTestResult) voiceTtsTestResult.textContent = 'Playing...';
-            if (voiceTtsAudio) { voiceTtsAudio.src = '/api/voice/tts/test-audio?t=' + Date.now(); voiceTtsAudio.play().catch(() => {}); }
-          } else if (s && s.state === 'error') {
-            clearInterval(t); btnVoiceTtsTest.disabled = false; if (voiceTtsTestResult) voiceTtsTestResult.textContent = `Failed: ${s.error || 'unknown error'}`;
-          }
-        } catch (e) {}
-        if (polls > 80) { clearInterval(t); btnVoiceTtsTest.disabled = false; if (voiceTtsTestResult && voiceTtsTestResult.textContent.indexOf('Playing') !== 0) voiceTtsTestResult.textContent = 'Timed out — make sure the engine + voice model are installed.'; }
-      }, 1500);
-    } catch (err) { btnVoiceTtsTest.disabled = false; if (voiceTtsTestResult) voiceTtsTestResult.textContent = `Test failed: ${err.message}`; }
-  }
-
-  if (inputLlamacppCtx) {
-    inputLlamacppCtx.addEventListener('change', () => {
-      const v = parseInt(inputLlamacppCtx.value, 10);
-      if (v && v >= 512) { llamacppContextSize = v; localStorage.setItem('shadow_llamacpp_ctx', String(v)); }
-    });
-  }
-  if (selectLlamacppModel) {
-    selectLlamacppModel.addEventListener('change', () => {
-      if (subagentProvider === 'llamacpp_builtin' && selectLlamacppModel.value) {
-        subagentModel = selectLlamacppModel.value;
-        localStorage.setItem('shadow_subagent_model', subagentModel);
-      }
     });
   }
   if (selectSubagentModelOpenaiCodex) {
@@ -1365,7 +655,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   startBackendHealthMonitor();
   checkGoogleStatus();
   maybeCheckForUpdate();
-  maybeAutoUpdateLlamacpp();
 
   // Show onboarding if no key is saved
   if (!apiKey) {
@@ -1529,13 +818,8 @@ window.addEventListener('DOMContentLoaded', async () => {
       else if (subagentProvider === 'minimax') subagentModel = selectSubagentModelMinimax.value;
       else if (subagentProvider === 'moonshot') subagentModel = selectSubagentModelMoonshot.value;
       else if (subagentProvider === 'ollama') subagentModel = selectSubagentModelOllama.value;
-      else if (subagentProvider === 'lmstudio_local') subagentModel = selectSubagentModelLmstudioLocal ? selectSubagentModelLmstudioLocal.value : '';
       else if (subagentProvider === 'custom_openai') subagentModel = inputCustomModel ? inputCustomModel.value.trim() : '';
-      else if (subagentProvider === 'llamacpp_builtin') subagentModel = (selectLlamacppModel && selectLlamacppModel.value) ? selectLlamacppModel.value : (llamacppServerModel || subagentModel);
       else subagentModel = '';
-      if (inputLmstudioEndpoint) {
-        lmstudioEndpoint = inputLmstudioEndpoint.value.trim() || 'http://localhost:1234/v1';
-      }
       if (inputCustomEndpoint) {
         customEndpoint = inputCustomEndpoint.value.trim();
       }
@@ -1562,30 +846,10 @@ window.addEventListener('DOMContentLoaded', async () => {
       localStorage.setItem('shadow_moonshot_key', moonshotApiKey);
 
       localStorage.setItem('shadow_ollama_key', ollamaApiKey);
-      localStorage.setItem('shadow_lmstudio_endpoint', lmstudioEndpoint);
       localStorage.setItem('shadow_custom_endpoint', customEndpoint);
       localStorage.setItem('shadow_custom_api_key', customApiKey);
       localStorage.setItem('shadow_searxng_url', searxngSearchUrl);
       localStorage.setItem('shadow_searxng_port', searxngSearchPort);
-
-      // Free built-in llama.cpp VRAM when the user switches away from it or to a different model,
-      // as long as nothing is actively using it. The newly selected model loads on the next subagent.
-      (async () => {
-        try {
-          const anyActive = activeSubagents.some(s => /^(running|waiting_auth)$/i.test(String(s.status || '')));
-          if (anyActive) return;
-          const sres = await fetchLocalApiWithTimeout('/api/llamacpp/status', {}, LOCAL_API_TIMEOUT_MS);
-          const sdata = await readBootResponseJsonWithTimeout(sres, LOCAL_API_TIMEOUT_MS);
-          if (sdata && sdata.server && sdata.server.port) {
-            const stillWanted = (subagentProvider === 'llamacpp_builtin' && sdata.server.model === subagentModel);
-            if (!stillWanted) {
-              await fetchLocalApiWithTimeout('/api/llamacpp/stop', { method: 'POST' }, LOCAL_API_TIMEOUT_MS);
-              llamacppBuiltinBase = '';
-              llamacppServerModel = '';
-            }
-          }
-        } catch (e) {}
-      })();
 
       if (inputMemoryBackupEnabled) {
         memoryBackupEnabled = inputMemoryBackupEnabled.checked;
@@ -1687,7 +951,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (onboardingSubagentEndpoint) {
     onboardingSubagentEndpoint.addEventListener('change', () => {
       const prov = onboardingSubagentProvider ? onboardingSubagentProvider.value : '';
-      if (prov === 'lmstudio_local' || prov === 'custom_openai') onboardingDetectModels();
+      if (prov === 'custom_openai') onboardingDetectModels();
     });
   }
 
@@ -1735,11 +999,6 @@ window.addEventListener('DOMContentLoaded', async () => {
 
       onboardingModal.classList.add('hidden');
       addSystemMessage(`Welcome${userName ? `, ${userName}` : ''}! Setup complete. Subagents will use ${subagentProvider}${subagentModel ? ` / ${subagentModel}` : ''}.`);
-      // Built-in llama.cpp needs a one-time install + model download — drop the user right there.
-      if (subagentProvider === 'llamacpp_builtin') {
-        addSystemMessage('Built-in llama.cpp selected - opening Settings so you can install it and download a model.');
-        setTimeout(() => { try { openSettingsToField('btn-llamacpp-install', 'llamacpp_builtin'); } catch (e) {} }, 600);
-      }
     } catch (err) {
       console.error('Onboarding finish failed:', err);
       addSystemMessage(`Setup hit an error: ${err.message}. Your key was saved — you can finish configuring in Settings.`);

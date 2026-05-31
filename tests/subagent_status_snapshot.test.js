@@ -109,7 +109,7 @@ describe('direct subagent status questions', () => {
     expect(core).toContain("return 'shadow_active_subagents_v1'");
     expect(bootUi).toContain("typeof recoverOrphanedActiveSubagentSnapshots === 'function'");
     expect(bootUi).toContain('recoverOrphanedActiveSubagentSnapshots();');
-    expect(indexHtml).toContain('09-subagents-core.js?v=llamacpp-i-20260530');
+    expect(indexHtml).toContain('09-subagents-core.js?v=remove-ollama-local-20260530');
   });
 
   it('recognizes "check on the agent" as a status question', () => {

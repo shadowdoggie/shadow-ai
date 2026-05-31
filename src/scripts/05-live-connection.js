@@ -258,12 +258,6 @@ async function refineSubagentInstructionWithSelectedModel(kind, text, context = 
       outputChars: refined.length
     });
     return refined;
-  } catch (e) {
-    // Refinement is best-effort. If the selected model can't be reached (e.g. a local llama.cpp
-    // server that isn't running yet), use the raw task instead of failing — the subagent loop
-    // will start the server. This keeps the voice responsive and never blocks on a model load.
-    addSystemMessage(`[Smart] Prompt refinement skipped (${e && e.message ? e.message : e}); using the task as-is.`);
-    return rawText;
   } finally {
     subagentPromptRefinementInProgress = false;
   }
