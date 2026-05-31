@@ -353,6 +353,22 @@ async function loadConfigFromServer() {
       localStorage.setItem('shadow_searxng_port', searxngSearchPort);
       if (inputSearxngSearchPort) inputSearxngSearchPort.value = searxngSearchPort;
     }
+    if (config.shadow_auto_update_check !== undefined) {
+      autoUpdateCheckEnabled = config.shadow_auto_update_check !== false && config.shadow_auto_update_check !== 'false';
+      localStorage.setItem('shadow_auto_update_check', autoUpdateCheckEnabled ? 'true' : 'false');
+      if (inputAutoUpdateCheck) inputAutoUpdateCheck.checked = autoUpdateCheckEnabled;
+    }
+    if (config.shadow_mic_device !== undefined) {
+      selectedMicDeviceId = config.shadow_mic_device || '';
+      localStorage.setItem('shadow_mic_device', selectedMicDeviceId);
+      if (typeof selectMicDevice !== 'undefined' && selectMicDevice) {
+        const present = Array.prototype.some.call(selectMicDevice.options, function (o) { return o.value === selectedMicDeviceId; });
+        if (present) selectMicDevice.value = selectedMicDeviceId;
+      }
+    }
+    if (config.shadow_is_whispering !== undefined) {
+      localStorage.setItem('shadow_is_whispering', (config.shadow_is_whispering === true || config.shadow_is_whispering === 'true') ? 'true' : 'false');
+    }
 
     // Re-run provider UI visibility after restoring settings
     selectSubagentProvider.dispatchEvent(new Event('change'));
@@ -408,8 +424,13 @@ async function saveConfigToServer(options = {}) {
       shadow_minimax_key: minimaxApiKey,
       shadow_moonshot_key: moonshotApiKey,
       shadow_ollama_key: ollamaApiKey,
+      shadow_custom_endpoint: customEndpoint,
+      shadow_custom_api_key: customApiKey,
       shadow_searxng_url: searxngSearchUrl,
       shadow_searxng_port: searxngSearchPort,
+      shadow_auto_update_check: autoUpdateCheckEnabled,
+      shadow_mic_device: (typeof selectedMicDeviceId === 'string') ? selectedMicDeviceId : '',
+      shadow_is_whispering: localStorage.getItem('shadow_is_whispering') === 'true',
       shadow_config_saved_at: Date.now()
     };
     const res = await fetchWithTimeout('/api/config', {

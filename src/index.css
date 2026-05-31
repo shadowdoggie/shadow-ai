@@ -776,8 +776,16 @@ html, body {
   text-transform: uppercase;
 }
 
-.form-group input, 
-.form-group select, 
+/* Secret fields (API keys, client secret) are type="text" + masked here rather than
+   type="password", so Chrome never treats the settings form as a credential form and never
+   offers to "save password". Toggling this class off (the Show button) reveals the value. */
+.masked-input {
+  -webkit-text-security: disc;
+  text-security: disc;
+}
+
+.form-group input,
+.form-group select,
 .form-group textarea {
   background: var(--bg-input);
   border: 1px solid var(--border-light);

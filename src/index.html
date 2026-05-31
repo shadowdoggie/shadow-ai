@@ -136,7 +136,7 @@
         <div class="form-group">
           <label for="input-api-key">Gemini API Key</label>
           <div class="input-with-toggle">
-            <input type="password" id="input-api-key" placeholder="AIzaSy..." autocomplete="off">
+            <input type="text" class="masked-input" id="input-api-key" placeholder="AIzaSy..." autocomplete="off">
             <button id="btn-toggle-key-visibility" class="text-button" type="button">Show</button>
           </div>
           <span class="field-hint">You can get an API key from the <a href="https://aistudio.google.com/" target="_blank">Google AI Studio</a>.</span>
@@ -357,17 +357,17 @@
 
         <div class="form-group" id="group-minimax-key" style="display: none;">
           <label for="input-minimax-key">MiniMax API Key</label>
-          <input type="password" id="input-minimax-key" placeholder="Enter MiniMax API Key" autocomplete="off">
+          <input type="text" class="masked-input" id="input-minimax-key" placeholder="Enter MiniMax API Key" autocomplete="off">
         </div>
 
         <div class="form-group" id="group-moonshot-key" style="display: none;">
           <label for="input-moonshot-key">Canopy Wave API Key</label>
-          <input type="password" id="input-moonshot-key" placeholder="Enter Canopy Wave API Key" autocomplete="off">
+          <input type="text" class="masked-input" id="input-moonshot-key" placeholder="Enter Canopy Wave API Key" autocomplete="off">
         </div>
 
         <div class="form-group" id="group-ollama-settings" style="display: none;">
           <label for="input-ollama-key">Ollama Cloud API Key</label>
-          <input type="password" id="input-ollama-key" placeholder="Enter Ollama Cloud API Key" autocomplete="off">
+          <input type="text" class="masked-input" id="input-ollama-key" placeholder="Enter Ollama Cloud API Key" autocomplete="off">
         </div>
 
 
@@ -375,7 +375,7 @@
           <label for="input-custom-endpoint">Custom API Base URL (OpenAI-compatible)</label>
           <input type="text" id="input-custom-endpoint" placeholder="http://localhost:8080/v1" autocomplete="off">
           <label for="input-custom-api-key" style="display:block;margin-top:10px;">API Key (optional)</label>
-          <input type="password" id="input-custom-api-key" placeholder="Leave blank if your endpoint needs no key" autocomplete="off">
+          <input type="text" class="masked-input" id="input-custom-api-key" placeholder="Leave blank if your endpoint needs no key" autocomplete="off">
           <label for="input-custom-model" style="display:block;margin-top:10px;">Model</label>
           <input type="text" id="input-custom-model" list="datalist-custom-models" placeholder="model name (e.g. from your server)" autocomplete="off">
           <datalist id="datalist-custom-models"></datalist>
@@ -494,7 +494,7 @@
           </p>
           <div style="display:flex; flex-direction:column; gap:8px; margin-top:0.25rem;">
             <input type="text" id="input-google-client-id" placeholder="Client ID (…apps.googleusercontent.com)" autocomplete="off">
-            <input type="password" id="input-google-client-secret" placeholder="Client secret (GOCSPX-…)" autocomplete="off">
+            <input type="text" class="masked-input" id="input-google-client-secret" placeholder="Client secret (GOCSPX-…)" autocomplete="off">
             <button id="btn-save-google-credentials" class="secondary-button" type="button">Connect with Client ID + Secret</button>
           </div>
           <details style="margin-top:8px;">
@@ -589,7 +589,7 @@
         </p>
         <div class="form-group onboarding-key-group">
           <label for="onboarding-api-key">Enter your Gemini API key to begin:</label>
-          <input type="password" id="onboarding-api-key" placeholder="AIzaSy..." autocomplete="off">
+          <input type="text" class="masked-input" id="onboarding-api-key" placeholder="AIzaSy..." autocomplete="off">
           <span class="field-hint">Stored locally on this PC, never uploaded elsewhere. Get one free at <a href="https://aistudio.google.com/" target="_blank">Google AI Studio</a>.</span>
         </div>
       </div>
@@ -638,7 +638,7 @@
         </div>
         <div class="form-group hidden" id="onboarding-subagent-key-group">
           <label for="onboarding-subagent-key" id="onboarding-subagent-key-label">API key</label>
-          <input type="password" id="onboarding-subagent-key" placeholder="Enter API key" autocomplete="off">
+          <input type="text" class="masked-input" id="onboarding-subagent-key" placeholder="Enter API key" autocomplete="off">
         </div>
 
         <!-- OpenAI Codex one-time sign-in (openai_codex) -->

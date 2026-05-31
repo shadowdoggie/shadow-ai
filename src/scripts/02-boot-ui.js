@@ -1157,11 +1157,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   btnToggleKeyVisibility.addEventListener('click', () => {
-    if (inputApiKey.type === 'password') {
-      inputApiKey.type = 'text';
+    // The key field is type="text" + .masked-input (never type="password", to avoid Chrome's
+    // save-password prompt). Show/Hide toggles the masking class, not the input type.
+    if (inputApiKey.classList.contains('masked-input')) {
+      inputApiKey.classList.remove('masked-input');
       btnToggleKeyVisibility.textContent = 'Hide';
     } else {
-      inputApiKey.type = 'password';
+      inputApiKey.classList.add('masked-input');
       btnToggleKeyVisibility.textContent = 'Show';
     }
   });
