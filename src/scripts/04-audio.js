@@ -326,11 +326,6 @@ class AudioRecorder {
       const targetSampleRate = 16000;
 
       this.processor.onaudioprocess = (e) => {
-        if (isMuted) {
-          // If muted, don't send audio
-          return;
-        }
-
         let inputData = e.inputBuffer.getChannelData(0);
 
         // Push-to-talk gate. When a key is bound:
@@ -341,6 +336,11 @@ class AudioRecorder {
         const pttArmed = (typeof pttIsArmed === 'function') && pttIsArmed();
         const pttGateClosed = pttArmed && !pttIsOpen();
         const pttForcePass = pttArmed && !pttGateClosed;
+        // Muting must behave like a CLOSED gate, not a dead stream: stop passing the user's audio and skip
+        // barge-in, but keep streaming continuous SILENCE below. The old `if (isMuted) return` broke the
+        // audio stream to Gemini for the whole mute, which wedged the server VAD so the model often went
+        // silent after unmuting — the exact failure PTT had before it switched to streaming silence.
+        const inputGateClosed = isMuted || pttGateClosed;
 
         // Analyze volume for user audio activity & dynamic echo gate
         const micLevel = this.getVolume();
@@ -357,14 +357,15 @@ class AudioRecorder {
         // PTT gate closed -> the user is not holding the key, so there is no barge-in: forcing this
         // false skips the barge-in block, the pre-roll buffering branch, and the interrupt signal, so
         // we simply stream silence below.
-        const activeWorkForBargeIn = pttGateClosed
+        const activeWorkForBargeIn = inputGateClosed
           ? false
           : (typeof isLiveWorkActiveForVoiceBargeIn === 'function'
             ? isLiveWorkActiveForVoiceBargeIn()
             : playbackActiveForBargeIn);
         const micAboveCandidateThreshold = micLevel >= candidateThreshold;
-        // PTT gate closed -> never pass the user's audio (we stream silence below). PTT held -> always pass.
-        let shouldPassMicAudio = pttGateClosed ? false : (micAboveThreshold || pttForcePass);
+        // Gate closed (muted or PTT not held) -> never pass the user's audio (we stream silence below).
+        // PTT held -> always pass.
+        let shouldPassMicAudio = inputGateClosed ? false : (micAboveThreshold || pttForcePass);
         let shouldBufferLocalBargeInAudio = false;
         let shouldFlushLocalBargeInPreroll = false;
         let shouldSendLocalBargeInInterruptSignal = false;
@@ -384,6 +385,7 @@ class AudioRecorder {
         // (the barge-in block above may still fire its interrupt so holding to talk cuts the AI off).
         if (pttForcePass) shouldPassMicAudio = true;
         if (pttGateClosed) shouldPassMicAudio = false;
+        if (isMuted) shouldPassMicAudio = false; // mute is the hard override — beats PTT-held
 
         if (shouldPassMicAudio) {
           markUserAudioActivity('microphone');

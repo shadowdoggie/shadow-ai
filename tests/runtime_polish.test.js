@@ -839,7 +839,9 @@ describe('Live prompt stability', () => {
 
     expect(getLiveBaseSystemInstruction('x'.repeat(12000))).toContain('Compact realtime base instruction');
     const compiled = await getCompiledSystemInstruction();
-    expect(compiled.length).toBeLessThanOrEqual(16000);
+    // Other sections stay within the 16k target; recent dialogue (the reconnect safety net) gets up to
+    // its 3k budget of dedicated headroom on top, so the compiled prompt stays <= 19k (under the 22k cap).
+    expect(compiled.length).toBeLessThanOrEqual(19000);
     expect(compiled).toContain('Compact realtime base instruction');
     expect(compiled).toContain('ASSISTANT NAME');
     expect(compiled).toContain('WEB SEARCH');

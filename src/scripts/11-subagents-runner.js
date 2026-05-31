@@ -206,6 +206,17 @@ function looksLikeContextOverflowError(text) {
     || /(prompt|input|message[s]?)\s+(is\s+|are\s+)?too long/.test(t);
 }
 
+// A custom/OpenAI-compatible endpoint (LM Studio, vLLM, llama.cpp, a proxy) is unreachable — the local
+// server isn't running, isn't listening, or has no model loaded. Retrying a refused connection is
+// pointless and just spams errors, so we detect this and fail fast with a clear, actionable message.
+function isEndpointUnreachableError(text) {
+  const t = String(text || '').toLowerCase();
+  return /unable to connect to the remote server/.test(t)
+    || /connection refused|actively refused|no connection could be made/.test(t)
+    || /econnrefused|enetunreach|ehostunreach|getaddrinfo|name or service not known|no such host/.test(t)
+    || /failed to establish a new connection|connection timed out|the remote (name|server) could not be resolved/.test(t);
+}
+
 function getSubagentTimeoutAssessment(subagentRecord, now = Date.now()) {
   if (!subagentRecord) return null;
   const hardTimeoutMs = typeof SUBAGENT_TASK_HARD_TIMEOUT_MS === 'number'
@@ -2323,6 +2334,16 @@ When finished, you MUST call finish_task with status="success" only if the reque
 
         if (response.status === 429 || response.status >= 500) {
           if (isSubagentCancelled(subagentRecord)) throw new Error('Task cancelled by user.');
+          // Fail FAST on an unreachable custom endpoint instead of retrying a refused connection 5x with
+          // long backoffs (the "kept spamming that error" symptom). Surfaces a clear, actionable message.
+          if (response.status >= 500 && subagentProvider === 'custom_openai') {
+            let errBody = '';
+            try { errBody = await readFetchResponseTextWithTimeout(response, SUBAGENT_MODEL_TIMEOUT_MS, subagentRecord); } catch (e) {}
+            if (isEndpointUnreachableError(errBody)) {
+              const base = (typeof getCustomOpenAiBase === 'function' && getCustomOpenAiBase()) || 'your custom endpoint';
+              throw new Error(`Custom endpoint not reachable at ${base}. Start the local server (e.g. LM Studio) with the model loaded, or switch the subagent provider to Codex or Gemini in Settings.`);
+            }
+          }
           retries++;
           const maxRetries = response.status >= 500 ? 5 : 8;
           if (retries > maxRetries) {
@@ -2780,9 +2801,26 @@ When finished, you MUST call finish_task with status="success" only if the reque
               addSubagentMessage('Google Contacts listed via Workspace integration.');
             } else if (call.name === 'finish_task') {
               let finalStatus = String(call.args.status || '').toLowerCase();
-              const summary = call.args.summary || '';
-              const verification = call.args.verification || '';
+              let summary = call.args.summary || '';
+              let verification = call.args.verification || '';
               const remainingIssues = call.args.remaining_issues || '';
+              // Recover from a malformed/empty finish_task. Some models (notably gpt-5.5 codex) sometimes
+              // emit `finish_task {}` with no status/summary AFTER doing real work — the old handler fell
+              // through to the failure branch and threw the whole analysis away as "an error". If the
+              // subagent actually gathered tool evidence, synthesize a result from it instead of failing,
+              // so the user gets the findings rather than a dead-end error.
+              if (!['success', 'partial', 'failed'].includes(finalStatus)) {
+                const ev = typeof getSubagentEvidenceSummary === 'function' ? getSubagentEvidenceSummary(subagentRecord, 12) : '';
+                if ((Number(subagentRecord.successfulToolCount) || 0) > 0 || (ev && ev.trim())) {
+                  finalStatus = 'success';
+                  if (!summary) summary = 'Completed the work; summarizing from the results gathered across the prior steps.';
+                  if (!verification) verification = ev || 'Work was performed across the prior tool steps.';
+                  addSubagentMessage('finish_task arrived with no/invalid status but tool evidence exists — recovering as success from the gathered evidence instead of erroring.');
+                } else {
+                  finalStatus = 'failed';
+                  if (!summary) summary = 'The subagent ended without completing the task or gathering usable results.';
+                }
+              }
               const finalText = `${summary}\n\nVerification: ${verification}${remainingIssues ? `\n\nRemaining issues: ${remainingIssues}` : ''}`.trim();
               let shouldStopForFinish = true;
               if (finalStatus === 'success' && typeof getSubagentFinishReadiness === 'function') {

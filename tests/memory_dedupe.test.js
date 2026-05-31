@@ -29,6 +29,7 @@ function loadMemoryDedupeFunctions() {
     'hasDurableMemoryValue',
     'isAssistantReferentialMemoryValue',
     'isDisfluentOrLowQualityMemoryValue',
+    'isTransientOrTrivialFact',
     'getDurableMemoryContentTokens',
     'isValidMemoryNodePayload',
     'toMemoryIdSegment',
@@ -138,6 +139,29 @@ describe('memory node dedupe', () => {
     // The exact garbage case from the field does not become a saved fact.
     const junk = extractDurableMemoryCandidates('I use um uh a setup file on my desktop');
     expect(junk.some(c => /setup file on my desktop/i.test(c.description || ''))).toBe(false);
+  });
+
+  it('drops transient chatter as facts but keeps genuine durable facts', () => {
+    const { isTransientOrTrivialFact, extractDurableMemoryCandidates } = loadMemoryDedupeFunctions();
+
+    // The real field junk: transient actions/states/intentions/fillers are rejected.
+    ['singing', 'saying', 'paint open', 'tired', 'to go', 'a question', 'something'].forEach(v => {
+      expect(isTransientOrTrivialFact(v)).toBe(true);
+    });
+    // Genuine durable facts pass.
+    ['two cats', 'guitar', 'a Tesla', 'allergic to peanuts'].forEach(v => {
+      expect(isTransientOrTrivialFact(v)).toBe(false);
+    });
+
+    // End-to-end: one-off chatter never becomes a regex-captured fact.
+    expect(extractDurableMemoryCandidates('I am singing').some(c => c.id === 'user_fact_singing')).toBe(false);
+    expect(extractDurableMemoryCandidates('I have paint open').some(c => /paint/.test(c.id))).toBe(false);
+    expect(extractDurableMemoryCandidates('I was just coughing').some(c => /cough/.test(c.id))).toBe(false);
+    // Generic possessions are now the MODEL's job (it stores them when it sees fit), not the regex.
+    expect(extractDurableMemoryCandidates('I have two cats').some(c => c.type === 'fact')).toBe(false);
+    // High-confidence durable facts ARE still auto-captured by the narrowed regex.
+    expect(extractDurableMemoryCandidates('I am allergic to peanuts').some(c => c.type === 'fact')).toBe(true);
+    expect(extractDurableMemoryCandidates('I was born in Texas').some(c => c.type === 'fact')).toBe(true);
   });
 
   it('rejects tiny shorthand-only memory node payloads generically', () => {

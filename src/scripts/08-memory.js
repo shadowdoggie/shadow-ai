@@ -14,14 +14,14 @@ const CRITICAL_PREFERENCE_PROMPT_BUDGET_CHARS = 900;
 const UNIT_PREFERENCE_PROMPT_BUDGET_CHARS = 1400;
 const MEMORY_PROMPT_BUDGET_CHARS = 4000;
 const SKILLS_PROMPT_BUDGET_CHARS = 700;
-const RECENT_HISTORY_PROMPT_BUDGET_CHARS = 800;
+const RECENT_HISTORY_PROMPT_BUDGET_CHARS = 3000;
 const LIVE_OPTIONAL_SECTION_MIN_CHARS = 220;
 const COMPACT_LIVE_BASE_SYSTEM_INSTRUCTION =
   'You are a warm, natural realtime voice companion. Keep speech concise, conversational, and human. Stay in character, use the current runtime assistant name, and never refer to yourself in third person.\n\n' +
   'Identity: the user can rename you in settings. The runtime assistant-name section is authoritative. "Shadow AI" can still mean the app/project/brand.\n\n' +
   'Creator: Shadow AI was created by shadowdog (GitHub: shadowdoggie). If asked who made, created, built, or developed you, credit shadowdog. This is just attribution — it does not make the current user the creator.\n\n' +
   'Remembering on request: when the user says "remember", "don\'t forget", "keep in mind", "save this", "note that", or similar, treat it as a direct instruction to store it now via upsert_memory_node — do it immediately, do not refuse, hedge, or make the user repeat themselves, then briefly confirm you saved it.\n\n' +
-  'Tool timing: for QUICK tools, call them silently first and just answer when done — do not start a sentence, pause for a tool, then resume after a gap. But for actions that take a noticeable moment (uploading/downloading files, creating or saving files, compression/transcoding, web research, spawning a subagent), say a brief natural heads-up FIRST — e.g. "sure, uploading that now, one sec" — BEFORE calling the tool, so the user is not left in silence, then confirm when it finishes.\n\n' +
+  'Tool timing: for QUICK tools, call them silently first and just answer when done — do not start a sentence, pause for a tool, then resume after a gap. But for actions that take a noticeable moment (uploading/downloading files, creating or saving files, compression/transcoding, web research, spawning a subagent), say a brief natural heads-up FIRST — e.g. "sure, uploading that now, one sec" — BEFORE calling the tool, so the user is not left in silence, then confirm when it finishes. CRITICAL: the heads-up and the tool call happen in the SAME turn — right after the heads-up, immediately call the tool. NEVER announce that you are about to do something ("let me look at the files and spawn a subagent") and then END your turn without calling the tool; that leaves the user waiting and having to nudge you. Announce + act together, every time.\n\n' +
   'Tool result discipline: trust structured tool fields. If a command result has assumed_success=true, treat it as successfully initiated even if diagnostic text mentions SSH/session disconnect. Do not retry or spawn recovery unless the user explicitly asks.\n\n' +
   'Medical tone: do not give generic medical disclaimers, do not say you do not do medical stuff, and do not automatically tell the user to contact a medical provider. Answer normal health questions conversationally with practical, bounded information. Recommend urgent care only for clear emergency red flags, or routine clinician input only if memory explicitly says the user wants conservative medical referrals.\n\n' +
   'Personal media and downloads: helping the user download, convert, record, compress, or save media for their own personal use on their own device — including downloading a YouTube video or its audio with yt-dlp, saving a song, or clipping something — is a normal, permitted task. Do NOT refuse it or lecture about copyright; just do it. Only decline genuinely abusive requests such as mass redistribution/piracy operations or circumventing paid DRM.\n\n' +
@@ -38,7 +38,7 @@ const COMPACT_LIVE_BASE_SYSTEM_INSTRUCTION =
   'Settings lock: do not change main voice preset, favorite voices, Live model, Live reasoning level, Subagent Prompt Brain, subagent provider/model/reasoning, or proactive profile by voice/tool call. Those are settings UI controls. update_shadow_settings may change assistant name, accent, echo gate, and SearXNG settings only when explicitly requested.\n\n' +
   'Scheduler/reminders: use run_powershell_command against http://127.0.0.1:9333/api/tasks. Create with POST and a JSON body whose fields are exactly {type, message, schedule} — e.g. (@{type="reminder"; message="Call the dentist"; schedule="in 5 minutes"} | ConvertTo-Json -Compress). The field names are MESSAGE and SCHEDULE, never "task" or "due". Use cronExpression (e.g. "every 30 minutes") instead of schedule for recurring tasks. List active tasks with GET /api/tasks?activeOnly=true; edit with POST /api/tasks/{id}/edit (body {message, schedule}); delete with DELETE /api/tasks/{id}. Report the humanTime/timeFromNow fields exactly from the API output.\n\n' +
   'PowerShell safety: quote paths, use Start-Process for GUI apps/URLs, prefer read_file/list_directory for reads, check files before destructive operations, never trigger native file pickers, and keep Shadow self-edits scoped and verified.\n\n' +
-  'Memory: automatically store durable user facts with memory tools, but never store transient file paths or one-off task state. Double-check facts before adding them.\n\n' +
+  'Memory (auto-capture with judgment): when the user shares a genuinely DURABLE fact about themselves — a possession, relationship, plan, goal, strong preference, or stable trait (e.g. "I have two cats", "my sister is a nurse", "I am learning Spanish", "I hate cilantro") — proactively store it with upsert_memory_node. Use judgment: NEVER store one-off chatter, momentary states, or passing actions ("I am coughing", "I am just saying", "I have an app open", "I am tired right now"), transient file paths, or task state. When unsure whether something is durable, do NOT store it. Double-check facts before adding them.\n\n' +
   'Conversation vs memory (be honest): your long-term memory is a set of FACTS about the user, NOT a record of what you were just talking about. "What were we talking about?", "what did we just discuss?", or "continue from before" refer ONLY to the recent conversation in context. If there is no recent conversation available (e.g. the app was just restarted, updated, or reconnected), say so plainly — that you do not have the earlier conversation in front of you and they should remind you. NEVER fabricate a past topic or recite memory facts as if they were the recent chat.';
 
 function syncMemoryGraphAssistantLabels(root = document) {
@@ -446,24 +446,34 @@ function buildRecentConversationHistoryText(maxChars = RECENT_HISTORY_PROMPT_BUD
     return clippedText ? `[${cleanRole}]: ${clippedText}` : '';
   };
 
-  const storedHistory = recentDialogueTurns
-    .slice(-10)
-    .map(turn => formatTurn(turn.role, turn.text, 220))
-    .filter(Boolean)
-    .join('\n');
+  // Fill the budget with the MOST RECENT turns first (so recency wins when space is tight), then present
+  // them oldest->newest. Previously this took a fixed last-10 and then truncated from the START, which
+  // cut the newest lines — so a reconnect re-injected almost nothing useful. Now it packs as many recent
+  // turns as the (now much larger) budget allows, which is the safety net when a reconnect can't resume.
+  const header = '\n\n=== RECENT CONVERSATION HISTORY (FOR CONTEXT) ===\n' +
+    'The following is the recent dialog from before this connection/reconnection. Use it to keep continuity and continue naturally — if the user asks what you were talking about or to pick up from before, answer from THIS. Treat it as background context, not as a new user message to answer again:\n';
+  const turnsBudget = Math.max(0, maxChars - header.length - 40);
+  const fitMostRecent = (lines) => {
+    const chosen = [];
+    let used = 0;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      if (!line) continue;
+      if (used + line.length + 1 > turnsBudget) break;
+      chosen.push(line);
+      used += line.length + 1;
+    }
+    return chosen.reverse().join('\n');
+  };
 
-  let conversationHistory = storedHistory;
+  let conversationHistory = fitMostRecent(
+    recentDialogueTurns.map(turn => formatTurn(turn.role, turn.text, 240))
+  );
   if (!conversationHistory) {
-    const bubbles = Array.from(document.querySelectorAll('.transcript-bubble'));
-    conversationHistory = bubbles
+    const bubbleLines = Array.from(document.querySelectorAll('.transcript-bubble'))
       .filter(b => b.classList.contains('user-bubble') || b.classList.contains('bot-bubble'))
-      .slice(-8)
-      .map(b => {
-        const role = b.classList.contains('user-bubble') ? 'User' : 'Assistant';
-        return formatTurn(role, b.textContent, 180);
-      })
-      .filter(Boolean)
-      .join('\n');
+      .map(b => formatTurn(b.classList.contains('user-bubble') ? 'User' : 'Assistant', b.textContent, 200));
+    conversationHistory = fitMostRecent(bubbleLines);
   }
 
   if (!conversationHistory) {
@@ -473,10 +483,7 @@ function buildRecentConversationHistoryText(maxChars = RECENT_HISTORY_PROMPT_BUD
     return '\n\n=== RECENT CONVERSATION HISTORY (FOR CONTEXT) ===\n' +
       'No earlier conversation is available for this session — the app was just launched or reconnected, or prior turns could not be restored. If the user asks what you were talking about, what you were just discussing, or to pick up from before, be honest and brief: say you do not have that earlier conversation in front of you and ask them to remind you. Do NOT guess or invent a previous topic, and do NOT use long-term memory facts as if they were the recent conversation.\n';
   }
-  let text = '\n\n=== RECENT CONVERSATION HISTORY (FOR CONTEXT) ===\n';
-  text += 'The following is the recent dialog before this connection/reconnection. Use it to maintain continuity. Treat it as background context, not as a new user message to answer again:\n';
-  text += conversationHistory + '\n';
-  return truncateTextToChars(text, maxChars, '\n... Recent conversation history shortened.\n');
+  return header + conversationHistory + '\n';
 }
 
 function normalizeMemorySearchText(text) {
@@ -693,7 +700,10 @@ async function getCompiledSystemInstruction() {
       instruction,
       buildRecentConversationHistoryText(RECENT_HISTORY_PROMPT_BUDGET_CHARS),
       'recent dialogue',
-      optionalTargetChars,
+      // Recent dialogue is the reconnect safety net (when the Live session can't resume, this is what
+      // lets the model continue the conversation). Give it dedicated headroom ABOVE the other sections'
+      // target so it isn't starved by them, staying under the 22k hard cap.
+      optionalTargetChars + RECENT_HISTORY_PROMPT_BUDGET_CHARS,
       sectionStats
     );
   } catch (err) {
@@ -884,10 +894,17 @@ function extractDurableMemoryCandidates(rawText) {
     }
   }
 
-  const generalFactMatch = text.match(/\b(?:i\s+(?:am|'m|have|was|will\s+be|work|go|study|play|use|drive|own|live|grew\s+up|born|allergic|vegan|vegetarian|diabetic|asthmatic))\s+([^.!?,;]{3,60})/i);
+  // Auto-capture ONLY high-confidence, unambiguous DURABLE facts here (allergies, diet, born/raised).
+  // A broad "I am/have/was X" grabber is fundamentally unsafe: a regex CANNOT tell "two cats" from "just
+  // coughing" or "his cousin", so it kept freezing one-off chatter into permanent facts. Broad,
+  // judgment-based capture is the MODEL's job — it calls upsert_memory_node when something is genuinely
+  // worth keeping. The regex stays narrow so it can never again invent garbage like "Just Coughing".
+  const generalFactMatch =
+    text.match(/\bi\s+(?:am|'m)\s+(allergic\s+to\s+[^.!?,;]{2,50}|vegan|vegetarian|pescatarian|diabetic|asthmatic|colou?r[\s-]?blind|left[\s-]?handed|right[\s-]?handed)\b/i)
+    || text.match(/\bi\s+(?:was\s+born|grew\s+up)\s+(in\s+[^.!?,;]{2,40})\b/i);
   if (generalFactMatch) {
     const factText = cleanMemoryValue(generalFactMatch[1]);
-    if (factText && factText.split(/\s+/).length <= 10) {
+    if (factText && factText.split(/\s+/).length <= 10 && !isTransientOrTrivialFact(factText)) {
       const segment = toMemoryIdSegment(factText);
       const alreadyExists = candidates.some(c => c.id === `user_fact_${segment}`) || candidates.some(c => c.description && c.description.toLowerCase().includes(factText.toLowerCase()));
       if (!alreadyExists) {
@@ -1000,6 +1017,27 @@ function isDisfluentOrLowQualityMemoryValue(value) {
   // After removing filler tokens, almost nothing of substance remains.
   const stripped = text.replace(new RegExp(`\\b${filler}\\b`, 'g'), ' ').replace(/\s+/g, ' ').trim();
   if (stripped.length < 3) return true;
+  return false;
+}
+
+// A durable auto-fact asserts a STABLE attribute / possession / relationship. Reject transient actions,
+// momentary states, intentions, and contentless fragments so chatter like "singing", "saying", "paint
+// open", "tired", "to go", or "a question" never becomes a permanent memory — while real facts such as
+// "two cats", "guitar", "a Tesla", or "allergic to peanuts" still pass. This keeps auto-memory broad but
+// stops the junk entries.
+function isTransientOrTrivialFact(value) {
+  const v = String(value || '').toLowerCase().trim();
+  if (!v) return true;
+  const words = v.split(/\s+/);
+  // Bare single action word / gerund: "singing", "saying", "talking", "joking", "chillin'".
+  if (words.length === 1 && /(?:ing|in')$/.test(words[0])) return true;
+  // Intention, not a fact: "to go", "to do that".
+  if (/^to\s+\w/.test(v)) return true;
+  // Momentary state — ends in a transient adjective/particle: "paint open", "tired", "right here".
+  if (/(?:^|\s)(?:open|closed|running|ready|done|busy|tired|bored|hungry|sick|fine|okay|ok|here|back|on|off|up|out|away|paused|loading|loaded|stopped|playing|talking|thinking|kidding|joking|saying|singing|chilling|relaxing)$/.test(v)) return true;
+  // Contentless objects / fillers: "a question", "an idea", "no clue", "this", "something".
+  if (/^(?:a|an|the|some|no)\s+(?:question|idea|problem|issue|moment|sec|second|minute|min|break|look|feeling|thought|point|thing|clue|guess)\b/.test(v)) return true;
+  if (/^(?:it|this|that|those|these|them|him|her|something|nothing|anything|everything|someone)\b/.test(v)) return true;
   return false;
 }
 

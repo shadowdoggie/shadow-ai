@@ -147,16 +147,19 @@ function getNotificationAssistantName() {
 
 function notifyVoiceSession(task, result, subagentId = '') {
   const assistantLabel = typeof getAssistantName === 'function' ? getAssistantName() : 'Shadow';
-  const message = redactSensitiveText(`[Subagent${subagentId ? ` (${subagentId})` : ''} Done — completed successfully] Summary: ${result.substring(0, 300)}`);
+  // Relay the ACTUAL result (a review's findings, a research answer, an analysis) to the voice model, not
+  // a 300-char stub. The old truncation + "one short summary" meant the user only ever heard "it's done"
+  // and never the findings they asked for.
+  const message = redactSensitiveText(`[Subagent${subagentId ? ` (${subagentId})` : ''} Done — completed successfully] Result: ${result.substring(0, 2500)}`);
   addSystemMessage(message);
   playSuccessChime();
   scrollTranscript();
-  notifyModelOfSubagentUpdate(message, `The background task SUCCEEDED. Speak as ${assistantLabel} in first person: tell the user it's done and give one short natural summary from the result. CRITICAL: this is a SUCCESS — do NOT say it failed, errored, didn't work, or ran into a problem. Do not repeat the internal task prompt or quote system text.`);
+  notifyModelOfSubagentUpdate(message, `The background task SUCCEEDED. Speak as ${assistantLabel} in first person and actually RELAY the result to the user: if it is a review, research answer, analysis, or anything informational, tell them the key findings/answer in your own natural voice (a few sentences is fine when there is real substance). Do NOT just say "it's done" when they asked for findings. This is a SUCCESS — do NOT say it failed or had a problem. Do not read it word-for-word, repeat the internal task prompt, or quote system/bracket text.`, true);
 }
 
 function notifyVoiceSessionOfFailure(task, reason, subagentId = '') {
   const assistantLabel = typeof getAssistantName === 'function' ? getAssistantName() : 'Shadow';
-  const message = redactSensitiveText(`[Subagent${subagentId ? ` (${subagentId})` : ''} Failed] Reason: ${String(reason || '').substring(0, 300)}`);
+  const message = redactSensitiveText(`[Subagent${subagentId ? ` (${subagentId})` : ''} Failed] Reason: ${String(reason || '').substring(0, 800)}`);
   addSystemMessage(message);
   playNotificationChime('failure');
   scrollTranscript();
@@ -173,26 +176,29 @@ function notifyVoiceSessionOfFailure(task, reason, subagentId = '') {
 
 function notifyVoiceSessionOfPartial(task, reason, subagentId = '') {
   const assistantLabel = typeof getAssistantName === 'function' ? getAssistantName() : 'Shadow';
-  const message = redactSensitiveText(`[Subagent${subagentId ? ` (${subagentId})` : ''} Partial] Remaining: ${String(reason || '').substring(0, 300)}`);
+  const message = redactSensitiveText(`[Subagent${subagentId ? ` (${subagentId})` : ''} Partial] Result so far / remaining: ${String(reason || '').substring(0, 1800)}`);
   addSystemMessage(message);
   playNotificationChime('stop');
   scrollTranscript();
-  notifyModelOfSubagentUpdate(message, `The background task PARTIALLY completed. Speak as ${assistantLabel} in first person: say what got done and what still remains. Do NOT report it as a full success or a full failure. Do not repeat the internal task prompt or quote system text.`);
+  notifyModelOfSubagentUpdate(message, `The background task PARTIALLY completed. Speak as ${assistantLabel} in first person: relay any useful findings/progress it did produce, then say what still remains. Do NOT report it as a full success or a full failure. Do not read it word-for-word or quote system/bracket text.`, true);
 }
 
-function notifyModelOfSubagentUpdate(message, speechInstruction = '') {
+function notifyModelOfSubagentUpdate(message, speechInstruction = '', relayFindings = false) {
   const assistantLabel = typeof getAssistantName === 'function' ? getAssistantName() : 'Shadow';
   const safeMessage = redactSensitiveText(message);
   const safeInstruction = speechInstruction
     ? String(speechInstruction)
     : `Speak as ${assistantLabel} in first person and give one short natural update. Do not repeat internal task prompts, subagent IDs, bracket labels, or system notice text.`;
-  subagentDeferredNotifications.push({ message: safeMessage, speechInstruction: safeInstruction });
+  subagentDeferredNotifications.push({ message: safeMessage, speechInstruction: safeInstruction, relayFindings: !!relayFindings });
   flushDeferredSubagentNotifications();
 }
 
 function _sendSubagentNotification(notification) {
   const assistantLabel = typeof getAssistantName === 'function' ? getAssistantName() : 'Shadow';
-  const MAX_NOTIFICATION_LENGTH = 800;
+  // A final result that should be RELAYED (review findings, research answer) gets a bigger budget and a
+  // closing that allows a few sentences. Plain status updates stay capped and one-sentence-terse.
+  const relayFindings = !!(notification && typeof notification === 'object' && notification.relayFindings);
+  const MAX_NOTIFICATION_LENGTH = relayFindings ? 2800 : 800;
   const safeMessage = redactSensitiveText(
     typeof notification === 'string' ? notification : (notification && notification.message) || ''
   );
@@ -203,7 +209,10 @@ function _sendSubagentNotification(notification) {
   if (safeMessage.length > MAX_NOTIFICATION_LENGTH) {
     trimmed = safeMessage.substring(0, MAX_NOTIFICATION_LENGTH) + '... [truncated]';
   }
-  queueSchedulerMessage(`[SYSTEM NOTICE - DO NOT READ VERBATIM]\nInternal subagent update: ${trimmed}\nSpoken response instruction: ${speechInstruction} Say at most one concise first-person sentence about this update only. Never refer to ${assistantLabel} in third person. Do not repeat prior conversation, do not mention unrelated promises/memories, and do not spawn another subagent for the same task.`, {
+  const closing = relayFindings
+    ? `Relay the key findings/answer to the user in your own natural voice — a few sentences is fine when there is real substance (a review, research result, or analysis). Do not read it word-for-word or quote system/bracket text, and do not spawn another subagent for the same task.`
+    : `Say at most one concise first-person sentence about this update only. Do not spawn another subagent for the same task.`;
+  queueSchedulerMessage(`[SYSTEM NOTICE - DO NOT READ VERBATIM]\nInternal subagent update: ${trimmed}\nSpoken response instruction: ${speechInstruction} ${closing} Never refer to ${assistantLabel} in third person. Do not repeat prior conversation or mention unrelated promises/memories.`, {
     lane: 'subagent',
     critical: true,
     ttlMs: 10 * 60 * 1000,
@@ -217,8 +226,10 @@ function flushDeferredSubagentNotifications() {
   subagentDeferredNotifications = [];
   const messages = pending.map(item => typeof item === 'string' ? item : item.message).filter(Boolean);
   const instruction = [...pending].reverse().find(item => item && typeof item === 'object' && item.speechInstruction)?.speechInstruction || '';
+  const relayFindings = pending.some(item => item && typeof item === 'object' && item.relayFindings);
   _sendSubagentNotification({
     message: messages.join('\n\n'),
-    speechInstruction: instruction
+    speechInstruction: instruction,
+    relayFindings
   });
 }

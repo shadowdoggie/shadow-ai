@@ -189,6 +189,9 @@ let smartMainLastConsultStartedAt = 0;
 // turnComplete to catch the Gemini hallucination where it TELLS the user it spawned background work
 // but never called spawn_background_agent — so we can force a correction instead of leaving a lie.
 let spawnedSubagentThisTurn = false;
+// True if ANY tool call fired this turn. Lets us catch "I'll look at the files and spawn a subagent"
+// followed by NO tool call — the model narrated an action then stalled until the user nudged it.
+let toolCalledThisTurn = false;
 let subagentPromptRefinementInProgress = false;
 let subagentProvider = localStorage.getItem('shadow_subagent_provider') || 'gemini';
 let subagentModel = localStorage.getItem('shadow_subagent_model') || '';

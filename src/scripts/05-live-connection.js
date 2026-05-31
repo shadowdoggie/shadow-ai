@@ -1388,7 +1388,7 @@ async function connect() {
     if (activeResumptionToken) {
       setupMessage.setup.sessionResumption.handle = activeResumptionToken;
       addSystemMessage('Resuming previous conversation context...');
-      console.log('[Live] Reconnecting WITH a session-resumption handle — prior conversation context is preserved by the server.');
+      console.log('[Live] Reconnecting WITH a saved resumption handle (asking the server to resume the session). NOTE: a handle does NOT guarantee the server actually restores the conversation — the re-injected recent-dialogue section is the reliable fallback for continuity.');
     } else if (recentDialogueTurns.length > 0) {
       addSystemMessage('Restoring recent conversation context...');
       // This is the "forgot everything" case: a reconnect with NO server handle, so the live context is
@@ -1471,6 +1471,7 @@ async function connect() {
         const calls = response.toolCall.functionCalls;
         const toolBatchEpoch = liveToolOperationEpoch;
         console.log('Received tool calls:', calls);
+        if (Array.isArray(calls) && calls.length) toolCalledThisTurn = true;
         if (smartMainRoutingEnabled && Array.isArray(calls) && calls.length) {
           observeSmartMainToolBatch(calls.map(call => call.name).filter(Boolean));
         }
@@ -2281,9 +2282,23 @@ async function connect() {
             if (claimedBackgroundStart && !offering && !spawnedSubagentThisTurn && !anyActive && typeof queueSchedulerMessage === 'function') {
               console.warn('[Smart] Background-work claim detected with no spawn this turn and no active subagent — injecting correction.');
               queueSchedulerMessage('[SYSTEM NOTICE - DO NOT READ VERBATIM] You just told the user you were starting or spawning background work, but you did NOT call spawn_background_agent this turn and no subagent is running. Either call spawn_background_agent NOW for that request, or tell the user plainly that you have not actually started it yet. Never claim background work is underway when it is not.', { lane: 'critical', critical: true, ttlMs: 60000, dedupeKey: 'false-spawn-claim' });
+            } else if (!offering && !toolCalledThisTurn && !anyActive && typeof queueSchedulerMessage === 'function') {
+              // Broader "narrated an action then stalled" guard: the model said it would DO something that
+              // requires a tool (look at files, search, read, run a command, spawn a subagent) but ended the
+              // turn without calling any tool — so it just waits until the user nudges ("hurry up?"). Detect
+              // the announced intent and auto-nudge it to act NOW, so the user never has to poke it.
+              const announcedAction =
+                /\b(let me|let's|lemme|i'?ll|i will|i'?m going to|i'?m gonna|gonna|going to|hold on|hang on|gimme|give me)\b[^.!?]{0,48}\b(look|take a look|check|see|find|search|pull up|grab|open|list|read|review|scan|inspect|examine|go through|dig in|dig into|look into|look at|look through|spawn|set up|kick off|run|execute|fetch|gather)\b/.test(aiSaid) ||
+                /\b(one|a)\s+(sec|second|moment|minute|mo|sec)\b/.test(aiSaid) ||
+                /\b(let me|i'?ll|i will)\s+(do|handle|get)\s+(that|this|it)\b/.test(aiSaid);
+              if (announcedAction) {
+                console.warn('[Smart] Model announced an action but called no tool this turn — injecting do-it-now nudge.');
+                queueSchedulerMessage('[SYSTEM NOTICE - DO NOT READ VERBATIM] You told the user you were about to do something (look at files, search, read, run a command, or spawn a background agent) but you ended your turn WITHOUT calling any tool. Do it NOW: call the appropriate tool immediately (list_directory, read_file, search_web, run_powershell_command, spawn_background_agent, etc.). Never announce an action and then stop and wait for the user to prompt you again.', { lane: 'critical', critical: true, ttlMs: 60000, dedupeKey: 'announced-no-tool' });
+              }
             }
           } catch (e) {}
           spawnedSubagentThisTurn = false;
+          toolCalledThisTurn = false;
 
           aiTranscriptFinalized = true;
           suppressInterruptedTurnAudio = false;
