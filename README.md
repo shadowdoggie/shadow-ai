@@ -75,8 +75,8 @@ your machine**. Gmail/Calendar/Drive/Contacts are optional via an in-app setup w
 > Get-FileHash .\ShadowAI-Setup.exe -Algorithm SHA256
 > ```
 >
-> v1.7.3 `ShadowAI-Setup.exe`:
-> `526c941eefd104be165e4855bd259a14dc6a77fb8ee853a3160c17b3a2636720`
+> v1.8.0 `ShadowAI-Setup.exe`:
+> `2215a32fc02f2e3c634223d5d8ab626d3f4286e3d4c6e1e39605db4e56bfd653`
 
 See **[SETUP.md](SETUP.md)** for full install, developer, and build-from-source steps.
 
