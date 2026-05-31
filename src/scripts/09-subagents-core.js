@@ -1248,6 +1248,9 @@ function shouldBlockSchedulerCreateForEditIntent(command) {
 
 function createSubagentRecord(task) {
   const now = Date.now();
+  // New spawn → bump the generation so any still-queued status notice from a previous subagent is
+  // recognized as stale at delivery time and not voiced into this new task's context.
+  if (typeof subagentSpawnGeneration === 'number') subagentSpawnGeneration++;
   const record = {
     id: `subagent_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
     task,

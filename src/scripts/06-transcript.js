@@ -7,7 +7,9 @@
 function setVisualizerState(state) {
   const assistantLabel = typeof getAssistantName === 'function' ? getAssistantName() : 'Shadow';
   const wasSpeaking = currentVisualizerState === 'speaking';
+  const wasThinking = currentVisualizerState === 'thinking';
   currentVisualizerState = state;
+  if (state === 'thinking' && !wasThinking) _thinkingEnteredAt = Date.now();
   updateDiagnosticsPanel();
   if (wasSpeaking && state !== 'speaking' && state !== 'interrupting') {
     flushDeferredSubagentNotifications();
@@ -35,6 +37,56 @@ function setVisualizerState(state) {
     case 'interrupting':
       visualizerStatus.textContent = `Interrupting ${assistantLabel}...`;
       break;
+  }
+}
+
+// Keep the idle ("disconnected") status line showing the CURRENT assistant name. setVisualizerState
+// only re-renders that line on an actual disconnect, so at boot, right after onboarding, or after a
+// rename it can otherwise still show the old/default "Shadow" until the first connect/disconnect.
+// Call this whenever the name may have changed while idle.
+function refreshIdleAssistantName() {
+  if (typeof isConnected !== 'undefined' && isConnected) return;
+  if (currentVisualizerState !== 'disconnected') return;
+  if (typeof visualizerStatus === 'undefined' || !visualizerStatus) return;
+  const assistantLabel = typeof getAssistantName === 'function' ? getAssistantName() : 'Shadow';
+  visualizerStatus.textContent = `Click Connect to talk to ${assistantLabel}`;
+}
+
+// Safety net for a stuck "thinking" indicator. 'thinking' is a transient state set while waiting on
+// the model or a tool follow-up. A few paths can end a turn without cleanly transitioning out of it
+// (e.g. a tool call the model never follows up on, or an output-audio stall that resolved), leaving
+// the indicator on "thinking" while nothing is actually happening. When we're connected, fully idle
+// (no turn or user turn in progress), not awaiting a tool follow-up or system notice, and no audio is
+// playing, snap back to "listening". The turnInProgress/userTurnActive guards mean this never fires
+// during the legitimate "user spoke, model is responding" window. Throttled to only act when stuck.
+let _idleVisualizerCheckAt = 0;
+let _thinkingEnteredAt = 0;
+const VISUALIZER_THINKING_STUCK_MS = 14000;
+function maybeRecoverIdleVisualizerState() {
+  if (currentVisualizerState !== 'thinking') return;
+  const now = Date.now();
+  if (now - _idleVisualizerCheckAt < 400) return;
+  _idleVisualizerCheckAt = now;
+  if (!isConnected) return;
+  const audioPlaying = !!(audioPlayer && audioPlayer.activeSources && audioPlayer.activeSources.length > 0);
+  // Clean idle: nothing is in flight -> snap straight back to listening.
+  const fullyIdle = !turnInProgress && !userTurnActive
+    && !(typeof toolResponseFollowupPending !== 'undefined' && toolResponseFollowupPending)
+    && !(typeof systemNoticeInFlight !== 'undefined' && systemNoticeInFlight)
+    && !(typeof serverInterruptPending !== 'undefined' && serverInterruptPending)
+    && !audioPlaying;
+  if (fullyIdle) {
+    setVisualizerState('listening');
+    return;
+  }
+  // Ultimate stuck guard: "thinking" must never sit for many seconds with no audio playing. If it
+  // has, a turn/follow-up flag got stuck (e.g. a barge-in mid tool follow-up). Force the turn idle
+  // and return to listening so the UI never freezes on the purple "thinking" bubble. The threshold
+  // is well above the 12s tool-follow-up timeout and 8s audio-stall recovery, so it never fires
+  // during legitimate waits.
+  if (!audioPlaying && _thinkingEnteredAt && (now - _thinkingEnteredAt) > VISUALIZER_THINKING_STUCK_MS) {
+    if (typeof markTurnIdle === 'function') markTurnIdle('stuck-thinking watchdog');
+    setVisualizerState('listening');
   }
 }
 

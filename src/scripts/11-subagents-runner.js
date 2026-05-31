@@ -121,10 +121,12 @@ function getCodexSubagentReasoning(targetModel) {
   const requested = OPENAI_CODEX_REASONING_MODES.has(subagentReasoningMode) ? subagentReasoningMode : 'medium';
   if (requested === 'none') return null;
 
-  // Shadow subagents are tool-loop workers. Very high reasoning tends to slow
-  // them down and makes them more likely to narrate instead of acting.
-  const capped = requested === 'high' || requested === 'xhigh' ? 'medium' : requested;
-  return { effort: capped, summary: 'auto' };
+  // Honor the user's selected effort for the actual tool-loop work, including high/xhigh. (High effort
+  // can make subagents narrate more and run slower, but that's now bounded by the loop caps, and the
+  // user explicitly chooses it.) NOTE: the prompt-refinement consult still caps high/xhigh -> medium —
+  // that short rewrite task returns empty text at very high effort. See
+  // getCodexSubagentPromptRefinementReasoning.
+  return { effort: requested, summary: 'auto' };
 }
 
 function buildCodexSubagentInstructions(subagentSystemInstruction, webSearchCheckpoint = 8) {
@@ -148,6 +150,11 @@ function getPlainTextFinishRepairPrompt(provider, textResponse) {
   const excerpt = String(textResponse || '').trim().slice(0, 1200);
   if (provider === OPENAI_CODEX_PROVIDER) {
     return `Your previous response was plain text, but Shadow subagents can only progress by tool calls. Next response must be exactly one tool call: either continue with the single next useful tool call, or call finish_task with the correct status. Do not include prose outside the tool call. Previous plain text:\n${excerpt}`;
+  }
+  if (provider === 'custom_openai') {
+    // Prompted-tool-mode endpoints emit calls as <tool_call> text, not native tool calls. Saying "I'll
+    // create the file" does nothing — restate the exact required format so the next turn actually acts.
+    return `That did nothing — writing prose does not create files or run anything. You MUST reply with EXACTLY ONE tool call and no other text, in this format:\n<tool_call>{"name": "run_powershell_command", "arguments": {"command": "..."}}</tool_call>\nDo it now: emit the single next <tool_call> to actually perform the step, or <tool_call>{"name":"finish_task","arguments":{"status":"success","summary":"...","verification":"..."}}</tool_call> if the goal is already verified. Your previous non-action text was: ${excerpt}`;
   }
   return `You must finalize by calling finish_task. Do not answer in plain text. Your previous text was: ${excerpt}`;
 }
@@ -394,8 +401,45 @@ function getWebSearchBatchBlockedPrompt() {
   return '[SYSTEM] Only one web_search may run per assistant turn. Do not batch multiple searches. Use the first result set, then choose one next action or finish.';
 }
 
-function createChatCompletionsMessages(history, subagentSystemInstruction) {
-  const openAiMessages = [{ role: 'system', content: subagentSystemInstruction }];
+// Build a plain-text "tool-call protocol" from the subagent tool declarations, for endpoints that do
+// NOT support native function calling (e.g. LM Studio + Qwen, many self-hosted servers). The model is
+// told the ONLY way to act is to emit a <tool_call>{...}</tool_call> block, which parseTextEmbeddedToolCalls
+// then recovers. Without this, such models just reply with prose ("I'll create the file…") and never act.
+function buildPromptedToolProtocol(subagentTools) {
+  const decls = (subagentTools && subagentTools[0] && subagentTools[0].functionDeclarations) || [];
+  const toolLines = decls.map(d => {
+    const props = (d.parameters && d.parameters.properties) ? d.parameters.properties : {};
+    const required = (d.parameters && Array.isArray(d.parameters.required)) ? d.parameters.required : [];
+    const names = Object.keys(props);
+    const paramDesc = names.length
+      ? names.map(p => required.indexOf(p) >= 0 ? `${p} (required)` : p).join(', ')
+      : '(no arguments)';
+    const desc = String(d.description || '').split('\n')[0].slice(0, 200);
+    return `- ${d.name}: ${desc}\n    arguments: ${paramDesc}`;
+  }).join('\n');
+  return `
+TOOL-CALL PROTOCOL — MANDATORY. This endpoint has NO built-in tool support, so you cannot create files, run commands, read files, or finish by writing prose. The ONLY way to do ANYTHING is to emit a tool call.
+On EVERY turn output EXACTLY ONE tool call and nothing else — no explanations, no markdown, no narration such as "I'll create the file" (that does nothing and wastes the turn).
+Use this EXACT format, with valid JSON, on its own:
+<tool_call>{"name": "TOOL_NAME", "arguments": { ... }}</tool_call>
+Rules:
+- Exactly one <tool_call>…</tool_call> per turn. No text before or after it.
+- "arguments" is a JSON object using the parameter names listed below. Inside JSON strings, write newlines as \\n and escape quotes.
+- After each tool result you receive, emit the next single tool call, or call finish_task when the goal is verified.
+- To finish: <tool_call>{"name": "finish_task", "arguments": {"status": "success", "summary": "...", "verification": "..."}}</tool_call>
+
+Available tools:
+${toolLines}
+`;
+}
+
+function createChatCompletionsMessages(history, subagentSystemInstruction, options) {
+  const promptedToolMode = !!(options && options.promptedToolMode);
+  const subagentTools = options && options.subagentTools;
+  const systemContent = promptedToolMode
+    ? `${subagentSystemInstruction}\n${buildPromptedToolProtocol(subagentTools)}`
+    : subagentSystemInstruction;
+  const openAiMessages = [{ role: 'system', content: systemContent }];
   const pendingCalls = [];
 
   for (let msgIdx = 0; msgIdx < history.length; msgIdx++) {
@@ -425,7 +469,17 @@ function createChatCompletionsMessages(history, subagentSystemInstruction) {
         }
       }
 
-      if (toolCalls.length > 0) {
+      if (promptedToolMode) {
+        // Echo the model's own tool calls back as <tool_call> text, so its history is in the exact
+        // protocol format it must keep producing (this endpoint has no native tool_calls channel).
+        let content = text || '';
+        for (const tc of toolCalls) {
+          let parsedArgs = {};
+          try { parsedArgs = JSON.parse(tc.function.arguments || '{}'); } catch (e) {}
+          content += `\n<tool_call>${JSON.stringify({ name: tc.function.name, arguments: parsedArgs })}</tool_call>`;
+        }
+        openAiMessages.push({ role: 'assistant', content: content.trim() || '(no output)' });
+      } else if (toolCalls.length > 0) {
         // Use '' not null for empty content: Ollama (native + OpenAI-compat) rejects null
         // content ("invalid message content type: <nil>"); '' is valid for all providers.
         openAiMessages.push({ role: 'assistant', content: text || '', tool_calls: toolCalls });
@@ -440,6 +494,7 @@ function createChatCompletionsMessages(history, subagentSystemInstruction) {
 
     if (isToolResponseTurn) {
       const toolResultImages = [];
+      const promptedResultTexts = [];
       for (let partIdx = 0; partIdx < parts.length; partIdx++) {
         const part = parts[partIdx];
         if (part.functionResponse) {
@@ -459,12 +514,17 @@ function createChatCompletionsMessages(history, subagentSystemInstruction) {
             pendingCalls.splice(matchingCallIdx, 1);
           }
 
-          openAiMessages.push({
-            role: 'tool',
-            tool_call_id: callId,
-            name: part.functionResponse.name,
-            content: JSON.stringify(part.functionResponse.response)
-          });
+          if (promptedToolMode) {
+            // No native 'tool' role in prompted mode — feed results back as plain user text.
+            promptedResultTexts.push(`Tool result (${part.functionResponse.name}): ${JSON.stringify(part.functionResponse.response)}`);
+          } else {
+            openAiMessages.push({
+              role: 'tool',
+              tool_call_id: callId,
+              name: part.functionResponse.name,
+              content: JSON.stringify(part.functionResponse.response)
+            });
+          }
         } else if (part.inlineData && part.inlineData.data) {
           toolResultImages.push({
             type: 'image_url',
@@ -472,7 +532,14 @@ function createChatCompletionsMessages(history, subagentSystemInstruction) {
           });
         }
       }
-      if (toolResultImages.length > 0) {
+      if (promptedToolMode && promptedResultTexts.length > 0) {
+        const resultText = `${promptedResultTexts.join('\n')}\n\nNow emit the next single <tool_call>, or finish_task if the goal is done and verified.`;
+        if (toolResultImages.length > 0) {
+          openAiMessages.push({ role: 'user', content: [{ type: 'text', text: resultText }, ...toolResultImages] });
+        } else {
+          openAiMessages.push({ role: 'user', content: resultText });
+        }
+      } else if (toolResultImages.length > 0) {
         openAiMessages.push({
           role: 'user',
           content: [
@@ -749,8 +816,12 @@ function parseCodexResponsesSseToGemini(sseText) {
 async function ensureReusableLearningArtifact(task, subagentRecord, finalText) {
   if (!isRepeatableLearningTask(task) || hasReusableLearningArtifact(subagentRecord)) return { status: 'skipped' };
 
-  const skillName = `workflow_${toReusableName(task)}`;
-  const instructions = `Reusable workflow learned from successful task.\n\nTask: ${task}\n\nOutcome / verification:\n${finalText || 'Completed successfully.'}\n\nImportant: Before repeating, inspect current page/files/state and avoid stale selectors or assumptions.`;
+  // task is already <think>-stripped (refinement strip / Gemini voice never emits it); strip finalText
+  // too as belt-and-suspenders in case a weak model crammed reasoning into the finish summary arg.
+  const cleanTask = stripReasoningBlocks(task);
+  const skillName = `workflow_${toReusableName(cleanTask)}`;
+  const instructions = `Reusable workflow learned from successful task.\n\nTask: ${cleanTask}\n\nOutcome / verification:\n${stripReasoningBlocks(finalText) || 'Completed successfully.'}\n\nImportant: Before repeating, inspect current page/files/state and avoid stale selectors or assumptions.`;
+  console.log(`[Subagent] Auto-learning: attempting to save reusable skill "${skillName}" (provider=${subagentRecord && subagentRecord.provider || 'unknown'}).`);
   const res = await fetchWithTimeout('/api/skills/save', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -760,7 +831,10 @@ async function ensureReusableLearningArtifact(task, subagentRecord, finalText) {
   if (result.status !== 'success') throw new Error(result.error || 'Failed to auto-save reusable skill.');
   subagentRecord.checkedSkills = true;
   subagentRecord.savedSkill = true;
-  addSubagentMessage(`Auto-saved reusable skill: ${result.skill_name || result.merged_into || skillName}`);
+  const savedAs = result.skill_name || result.merged_into || skillName;
+  const verb = result.merged_into ? 'merged into' : (result.overwrote_same_name ? 'updated' : 'saved');
+  console.log(`[Subagent] Auto-learning: ${verb} skill "${savedAs}"${result.path ? ` at ${result.path}` : ''}.`);
+  addSubagentMessage(`Auto-saved reusable skill: ${savedAs}`);
   return result;
 }
 
@@ -800,6 +874,17 @@ function getCodexSmartConsultReasoning(targetModel) {
   const requested = OPENAI_CODEX_REASONING_MODES.has(subagentReasoningMode) ? subagentReasoningMode : 'high';
   if (requested === 'none') return null;
   return { effort: requested, summary: 'auto' };
+}
+
+// Prompt refinement is a short, mechanical "rewrite this instruction" task — not the answer-only
+// reasoning consult and not a tool loop. With reasoning enabled, the Codex Responses model often
+// spends the whole turn on hidden reasoning and emits NO message, so the consult returns empty text
+// (observed at every effort level, high through low). Turn reasoning OFF for refinement so the model
+// produces a direct rewrite every time. This is independent of the user's execution reasoning
+// preference (which still drives the actual subagent work).
+function getCodexSubagentPromptRefinementReasoning(targetModel) {
+  if (!OPENAI_CODEX_REASONING_MODELS.has(targetModel)) return null;
+  return null;
 }
 
 function normalizeSmartConsultResponseStyle(style) {
@@ -937,6 +1022,139 @@ function extractTextFromOllamaChatResponse(json) {
   return '';
 }
 
+// Reasoning models (minimax-m2.7, deepseek, qwen3, glm, kimi, …) emit chain-of-thought wrapped in
+// <think>…</think> (or <thinking>…</thinking>) INSIDE their normal text output. We must strip it
+// everywhere we consume that text, or it pollutes: (a) the refined subagent task, (b) the subagent's
+// own conversation history (echoed back every turn → context bloat + self-confusion), (c) the
+// transcript shown to the user, (d) the result read back to the voice model, and (e) auto-learned
+// skill names/instructions. Codex and Gemini don't emit these tags, so this is a no-op for them.
+function stripReasoningBlocks(text) {
+  let out = String(text == null ? '' : text)
+    .replace(/<think>[\s\S]*?<\/think>/gi, ' ')
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, ' ');
+  // Unclosed/truncated reasoning: these models put reasoning FIRST, so a lone opening tag means
+  // everything after it is reasoning with no real answer — drop to end rather than expose it.
+  out = out.replace(/<think(?:ing)?>[\s\S]*$/i, ' ');
+  // Any orphan tags left over.
+  out = out.replace(/<\/?think(?:ing)?>/gi, ' ');
+  return out.replace(/[ \t]{2,}/g, ' ').trim();
+}
+
+// Parse JSON that local models often emit slightly malformed: first try strict JSON.parse; if that
+// fails, repair the single most common defect — raw newlines/tabs/CR left UNescaped inside string
+// values (very common when a tool argument carries a multi-line file/HTML payload) — then retry.
+function tolerantJsonParse(str) {
+  const s = String(str == null ? '' : str);
+  try { return JSON.parse(s); } catch (e) {}
+  let out = '';
+  let inStr = false, esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) { out += ch; esc = false; continue; }
+      if (ch === '\\') { out += ch; esc = true; continue; }
+      if (ch === '"') { out += ch; inStr = false; continue; }
+      if (ch === '\n') { out += '\\n'; continue; }
+      if (ch === '\r') { out += '\\r'; continue; }
+      if (ch === '\t') { out += '\\t'; continue; }
+      out += ch; continue;
+    }
+    if (ch === '"') { inStr = true; }
+    out += ch;
+  }
+  try { return JSON.parse(out); } catch (e) { return null; }
+}
+
+// Extract the first BALANCED {...} JSON object at or after `from`. String-aware, so braces inside JSON
+// string values (e.g. an HTML payload in a command argument) don't break the depth count, and a missing
+// closing </tool_call> tag is irrelevant. Returns { jsonStr, end } or null (truncated / no object).
+function extractBalancedJsonObject(s, from) {
+  const start = s.indexOf('{', from || 0);
+  if (start < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) { esc = false; }
+      else if (ch === '\\') { esc = true; }
+      else if (ch === '"') { inStr = false; }
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) return { jsonStr: s.slice(start, i + 1), end: i + 1 }; }
+  }
+  return null;
+}
+
+// Some OpenAI-compatible endpoints (self-hosted vLLM / LM Studio / llama.cpp servers, and various
+// proxies) do NOT parse a model's tool calls into the native `tool_calls` field — the model emits them
+// as TEXT in its chat-template format: Qwen/Hermes "<tool_call>{...}</tool_call>", a fenced
+// ```json {...}``` block, or a bare JSON object. Without this, a custom-endpoint subagent looks like it
+// "won't call tools" (just returns prose) and can never act, save a skill, or finish. Recover those calls
+// robustly: locate each <tool_call> marker (CLOSING TAG OPTIONAL — models often omit it) and pull the
+// balanced JSON object after it; fall back to a bare balanced JSON object. To never misread ordinary
+// prose, we only accept an object whose JSON names a KNOWN tool.
+function parseTextEmbeddedToolCalls(text, knownToolNames) {
+  const original = String(text == null ? '' : text);
+  const result = { calls: [], remainingText: original };
+  if (!original.trim()) return result;
+  const known = new Set((knownToolNames || []).filter(Boolean));
+  if (known.size === 0) return result;
+
+  const toCall = (obj) => {
+    if (!obj || typeof obj !== 'object') return null;
+    const name = obj.name || obj.tool || obj.tool_name || (obj.function && obj.function.name);
+    if (!name || !known.has(name)) return null;
+    let args = obj.arguments || obj.parameters || obj.args || obj.input || (obj.function && obj.function.arguments) || {};
+    if (typeof args === 'string') { const reparsed = tolerantJsonParse(args); if (reparsed && typeof reparsed === 'object') args = reparsed; }
+    return { name, args: (args && typeof args === 'object') ? args : {} };
+  };
+
+  const spans = []; // [start, end] of text we consumed into a tool call
+
+  // 1) <tool_call> markers (closing tag optional): pull the balanced JSON object right after each.
+  const markerRe = /<tool_call>/gi;
+  let m;
+  while ((m = markerRe.exec(original)) !== null) {
+    const obj = extractBalancedJsonObject(original, m.index + m[0].length);
+    if (!obj) continue;
+    const call = toCall(tolerantJsonParse(obj.jsonStr));
+    if (call) {
+      result.calls.push(call);
+      let end = obj.end;
+      const tail = original.slice(end).match(/^\s*<\/tool_call>/i);
+      if (tail) end += tail[0].length;
+      spans.push([m.index, end]);
+    }
+  }
+
+  // 2) No marker yielded a call → scan for a bare balanced JSON object naming a known tool.
+  if (result.calls.length === 0) {
+    let from = 0;
+    while (from < original.length) {
+      const obj = extractBalancedJsonObject(original, from);
+      if (!obj) break;
+      const call = toCall(tolerantJsonParse(obj.jsonStr));
+      if (call) { result.calls.push(call); spans.push([original.indexOf('{', from), obj.end]); break; }
+      from = obj.end;
+    }
+  }
+
+  // Rebuild remainingText with the consumed tool-call spans removed.
+  if (spans.length > 0) {
+    spans.sort((a, b) => a[0] - b[0]);
+    let out = '', cursor = 0;
+    for (const [s, e] of spans) {
+      if (s > cursor) out += original.slice(cursor, s);
+      cursor = Math.max(cursor, e);
+    }
+    out += original.slice(cursor);
+    result.remainingText = out.replace(/<\/?tool_call>/gi, ' ').replace(/[ \t]{2,}/g, ' ').trim();
+  }
+  return result;
+}
+
 function buildSubagentPromptRefinementInstructions(kind = 'spawn') {
   const mode = String(kind || '').toLowerCase() === 'steer' ? 'steer' : 'spawn';
   return `You rewrite realtime voice model text into a precise background subagent instruction.
@@ -946,6 +1164,7 @@ Rules:
 - Return only the rewritten instruction text. No markdown, no JSON, no preamble.
 - Do not refuse, moralize, or answer the user.
 - Do not perform the task. Only rewrite the task or steering instruction.
+- LEAD WITH THE DELIVERABLE AND ITS PURPOSE — what is being built or accomplished and what it IS (e.g. "Build a working calculator web app", "Create a personal portfolio website", "Download the YouTube video's audio as MP3") — then the concrete details (filename, path, styling, options). A filename like index.html or portfolio_demo.html is a DETAIL, never the identity of the task. Always keep the subject/type word (calculator, portfolio site, invoice, résumé) in the instruction even when a filename is also specified; if the user named the thing only by type, that type word is the most important word to preserve.
 - Preserve every concrete user requirement, target, constraint, and wording that matters.
 - Resolve pronouns and vague references using the recent dialogue/subagent context when possible.
 - Keep authorized maintenance scoped to the user's own declared repos, servers, VPS, services, and domains only.
@@ -987,10 +1206,10 @@ function createCodexSubagentPromptRefinementPayload(args = {}, targetModel = get
         ]
       }
     ],
-    reasoning: getCodexSmartConsultReasoning(targetModel),
+    reasoning: getCodexSubagentPromptRefinementReasoning(targetModel),
     store: false,
     stream: true,
-    include: getCodexSmartConsultReasoning(targetModel) ? ['reasoning.encrypted_content'] : [],
+    include: getCodexSubagentPromptRefinementReasoning(targetModel) ? ['reasoning.encrypted_content'] : [],
     prompt_cache_key: 'shadow-ai-subagent-prompt-refine',
     client_metadata: {
       'x-codex-installation-id': 'shadow-ai',
@@ -1058,7 +1277,40 @@ async function runSubagentPromptRefinement(args = {}) {
       }, SMART_CONSULT_MODEL_TIMEOUT_MS, refineRecord);
       const sseText = await readFetchResponseTextWithTimeout(response, SMART_CONSULT_MODEL_TIMEOUT_MS, refineRecord);
       if (!response.ok) throw new Error(`Subagent prompt refinement failed: HTTP ${response.status}. ${sseText.slice(0, 500)}`);
-      refined = extractTextFromCodexGeminiResponse(parseCodexResponsesSseToGemini(sseText));
+      const parsedCodex = parseCodexResponsesSseToGemini(sseText);
+      refined = extractTextFromCodexGeminiResponse(parsedCodex);
+      if (!String(refined || '').trim()) {
+        // Empty Codex refinement: dump exactly what the Responses stream contained so the cause
+        // (reasoning-only? incomplete/max_tokens? refusal? cut/empty stream?) is visible in the
+        // console — no more guessing.
+        try {
+          const evTypes = {};
+          let respStatus = '', incompleteReason = '', failedError = '';
+          for (const ln of String(sseText || '').split(/\r?\n/)) {
+            if (!ln.startsWith('data:')) continue;
+            const d = ln.slice(5).trim();
+            if (!d || d === '[DONE]') continue;
+            let ev; try { ev = JSON.parse(d); } catch (e) { continue; }
+            const t = ev.type || 'unknown';
+            evTypes[t] = (evTypes[t] || 0) + 1;
+            if (ev.response && ev.response.status) respStatus = ev.response.status;
+            if (ev.response && ev.response.incomplete_details && ev.response.incomplete_details.reason) incompleteReason = ev.response.incomplete_details.reason;
+            if (t === 'response.failed' && ev.response && ev.response.error) failedError = ev.response.error.message || JSON.stringify(ev.response.error);
+            if (t === 'error') failedError = ev.message || JSON.stringify(ev);
+          }
+          console.warn('[Codex refine] Empty result diagnostics:', {
+            kind: args.kind,
+            sseLength: String(sseText || '').length,
+            eventTypes: evTypes,
+            responseStatus: respStatus,
+            incompleteReason,
+            failedError,
+            parsedItemTypes: (parsedCodex.codexResponseItems || []).map(i => i && i.type),
+            rawHead: String(sseText || '').slice(0, 1200),
+            rawTail: String(sseText || '').slice(-600)
+          });
+        } catch (e) {}
+      }
     } else if (provider === 'gemini') {
       response = await fetchWithTimeout(`https://generativelanguage.googleapis.com/v1beta/${targetModel}:generateContent?key=${apiKey}`, {
         method: 'POST',
@@ -1135,7 +1387,15 @@ async function runSubagentPromptRefinement(args = {}) {
       refined = extractTextFromChatCompletionsResponse(json);
     }
 
-    refined = String(refined || '').trim().replace(/^```(?:\w+)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    // Strip chain-of-thought blocks that reasoning models (minimax, deepseek, qwen, glm, …) emit.
+    // If left in, the refined text becomes the subagent's TASK polluted with "<think>…</think>"
+    // reasoning, which (a) derails the subagent, (b) wrecks skill relevance matching, and (c) makes
+    // the auto-learned skill name start with "think_the_user_wants…" — which the skill quality guard
+    // rejects as a vague intention, so NO skill ever gets saved. Codex/Gemini don't emit these tags,
+    // so this is a no-op for them. Then strip a wrapping code fence (some models wrap the instruction).
+    refined = stripReasoningBlocks(refined)
+      .replace(/^```(?:\w+)?\s*/i, '').replace(/\s*```$/i, '')
+      .trim();
     if (!refined) throw new Error('Subagent prompt refinement returned empty text.');
     return { text: refined, model: targetModel, provider };
   } finally {
@@ -1307,11 +1567,48 @@ async function runSmartConsult(args = {}) {
   }
 }
 
+// Fetch the user's saved skills (name + instructions) from skills/*/instructions.txt — the same
+// source the get_available_skills tool uses. Used both by that tool and to deterministically seed
+// skills into a subagent's context at startup so reuse never depends on the model calling the tool.
+async function fetchSubagentSkills(subagentRecord) {
+  const psCmd = `
+    $shadowRoot = if ($env:SHADOW_DIR) { $env:SHADOW_DIR } else { Get-Location }
+    $skillsDir = Join-Path $shadowRoot "skills"
+    if (-not (Test-Path $skillsDir)) { "[]"; return }
+    $dirs = Get-ChildItem -Path $skillsDir -Directory
+    $res = @()
+    foreach ($d in $dirs) {
+      $instPath = Join-Path $d.FullName "instructions.txt"
+      if (Test-Path $instPath) {
+        $content = Get-Content $instPath -Raw
+        if ($null -ne $content) {
+          $res += [PSCustomObject]@{ name = $d.Name; content = $content }
+        }
+      }
+    }
+    if ($res.Count -eq 0) { "[]" } else { $res | ConvertTo-Json -Compress }
+  `;
+  const cmdJson = await runSubagentPowerShellCommand(subagentRecord, psCmd, SUBAGENT_TOOL_TIMEOUT_MS, 'skills');
+  let skills = [];
+  if (cmdJson.output && cmdJson.output.trim() && cmdJson.output.trim() !== 'Command executed successfully with no output.') {
+    try { skills = JSON.parse(cmdJson.output.trim()); } catch (e) {}
+  }
+  if (!Array.isArray(skills)) skills = [skills];
+  // Clean any <think> left in skills saved before the strip-on-write fix landed, so reused skills
+  // never re-inject reasoning noise into a fresh subagent's context.
+  for (const s of skills) {
+    if (s && typeof s.content === 'string') s.content = stripReasoningBlocks(s.content);
+  }
+  return skills;
+}
+
 async function runRestSubagent(task, model, subagentRecord = null) {
   addSubagentMessage(`Starting background task: "${task}"...`);
-  playNotificationChime('start');
 
   if (!subagentRecord) {
+    // Direct/scheduled entry (no pre-created record): chime here. The voice spawn path already
+    // chimed immediately at spawn time and passes its record in, so we don't double up.
+    playNotificationChime('start');
     subagentRecord = createSubagentRecord(task);
     activeSubagents.push(subagentRecord);
     updateSubagentIndicator();
@@ -1342,7 +1639,7 @@ async function runRestSubagent(task, model, subagentRecord = null) {
   const isLocalSubagentProvider = subagentProvider === 'custom_openai';
   const requiredSelfLearningRule = isLocalSubagentProvider
     ? '- SELF-LEARNING (OPTIONAL for local models): Saving a reusable skill is OPTIONAL and NOT required. For simple one-off tasks (e.g. creating a file), do NOT call get_available_skills or save_skill — call finish_task as soon as a tool result confirms the deliverable exists.'
-    : '- REQUIRED SELF-LEARNING: For successful repeatable workflows, including media downloads, conversions, uploads, browser workflows, scripts, builds, and automations, you MUST save or merge a reusable skill BEFORE finish_task(status="success"). You MUST call get_available_skills first to inspect duplicates. If a similar skill exists, merge your new details into that existing item using its existing name; do NOT create a duplicate.';
+    : '- REUSE LEARNED SKILLS: Your saved skills are shown under "[LEARNED SKILLS — REUSE WHEN RELEVANT]" in this conversation — the ones most relevant to this task are included in full, and any others are listed by name. If a relevant skill is shown in full, FOLLOW its steps instead of working it out from scratch (adapt details and verify current state). If only a NAME looks like it fits, call get_available_skills to read its full steps, then follow it.\n- REQUIRED SELF-LEARNING: For successful repeatable workflows, including media downloads, conversions, uploads, browser workflows, scripts, builds, and automations, save or merge a reusable skill BEFORE finish_task(status="success"). If a similar skill already appears above (in full or by name), merge your new details into that existing item using its existing name; do NOT create a duplicate.';
   const trailingSelfLearningRule = isLocalSubagentProvider
     ? 'FINISH PROMPTLY: As soon as the requested outcome exists and a tool result confirms it, call finish_task(status="success") immediately. Do not take extra exploratory steps, and do not save skills unless the user explicitly asked to save a reusable workflow.'
     : 'SELF-LEARNING: After completing a repeatable automation/download/build workflow, use "save_skill" to document/reuse the exact steps. You must check "get_available_skills" first to avoid duplicates. Similar items must be merged into the existing item, not duplicated.';
@@ -1355,7 +1652,8 @@ USER AUTHORIZATION CONTEXT:
 
 CRITICAL EXECUTION RULES:
 - ACT IMMEDIATELY. Do NOT explore, browse directories, or investigate unless strictly necessary for the task.
-- SELF-MAINTENANCE: If the task is explicitly about fixing, improving, debugging, stabilizing, publishing, or changing Shadow AI itself, you MAY inspect and modify Shadow AI's own source code and project files. Keep edits scoped to the request, preserve user data, and run relevant checks before finish_task(status="success").
+- WORKING DIRECTORY: run_powershell_command starts in the user's DESKTOP folder, not Shadow's app folder. A bare/relative filename (e.g. Set-Content "notes.txt") therefore lands on the Desktop. For files the user wants elsewhere, use an absolute path. NEVER write user files into Shadow AI's own install folder.
+- SELF-MAINTENANCE: If the task is explicitly about fixing, improving, debugging, stabilizing, publishing, or changing Shadow AI itself, you MAY inspect and modify Shadow AI's own source code and project files. Shadow AI's install folder is available as the environment variable $env:SHADOW_DIR — use it for absolute paths (e.g. Join-Path $env:SHADOW_DIR "src\\scripts\\..."), since the working directory is the Desktop, not the app folder. Keep edits scoped to the request, preserve user data, and run relevant checks before finish_task(status="success").
 - For simple file creation tasks that do not require current facts/research: Write file contents DIRECTLY using run_powershell_command with Set-Content or Out-File. Do NOT browse the filesystem first.
 - For coding tasks: Write the code yourself and save it. Do NOT search npm, browse node_modules, or explore documentation unless you genuinely don't know how to do something.
 - For reusable automation: use skills to document durable workflows. Do not create executable reusable tools inside Shadow AI.
@@ -1431,7 +1729,7 @@ When finished, you MUST call finish_task with status="success" only if the reque
         },
         {
           name: 'get_available_skills',
-          description: 'Returns all available skills with their names and instructions. ALWAYS call this FIRST before reading, creating, or merging skills Ã¢â‚¬â€ it returns everything in one call so you do not need to list_directory or read_file for skills individually.',
+          description: 'Returns all available skills with their names and instructions. Call this at the START of a repeatable-workflow task to REUSE an existing skill if one fits, and ALWAYS call it FIRST before creating or merging skills Ã¢â‚¬â€ it returns everything in one call so you do not need to list_directory or read_file for skills individually.',
           parameters: {
             type: 'OBJECT',
             properties: {},
@@ -1767,10 +2065,72 @@ When finished, you MUST call finish_task with status="success" only if the reque
     }
   ];
 
+  // Deterministically seed the user's saved skills into the subagent's context at startup (non-local
+  // providers only — local models stall/overflow on big prompts). Reuse must not depend on the model
+  // choosing to call get_available_skills: if a saved workflow matches this task it should ALWAYS be
+  // visible. Also marks checkedSkills so save_skill's duplicate-check is already satisfied.
+  let learnedSkillsBlock = '';
+  if (!isLocalSubagentProvider) {
+    try {
+      const learnedSkills = await fetchSubagentSkills(subagentRecord);
+      subagentRecord.checkedSkills = true;
+      if (Array.isArray(learnedSkills) && learnedSkills.length > 0) {
+        // Scale to large skill libraries: inline the FULL content of only the skills genuinely relevant
+        // to this task, under a hard char budget + count cap, and list the rest by NAME only. Keeps every
+        // spawn's prompt small even with 50+ skills, while the matching skill's steps are always present.
+        const FULL_CONTENT_BUDGET = 9000;   // max chars of inlined full skill bodies
+        const PER_SKILL_CAP = 2500;
+        const MAX_FULL = 5;                 // never inline more than this many full skills
+        // Generic tokens that appear across many skill names (and so carry no signal). Without this,
+        // words like "workflow"/"desktop"/"file"/"create" matched almost everything -> over-inclusion.
+        const SKILL_STOPWORDS = new Set(['workflow','create','created','creating','make','makes','get','gets','set','sets','the','and','for','from','with','your','user','new','basic','simple','single','named','name','into','this','that','run','runs','save','saves','saved','file','files','folder','desktop','then','using','use','task','tasks','via','of','to','on','in','it','a','an','my']);
+        const tokenize = function (str) {
+          return (String(str || '').toLowerCase().replace(/_/g, ' ').match(/[a-z0-9]{3,}/g) || []).filter(function (w) { return !SKILL_STOPWORDS.has(w); });
+        };
+        const taskWords = new Set(tokenize(task));
+        const scored = learnedSkills.map(function (s) {
+          const name = String((s && s.name) || 'skill');
+          const matched = tokenize(name).filter(function (w) { return taskWords.has(w); });
+          return { name: name, content: String((s && s.content) || ''), score: matched.length, matched: matched };
+        }).sort(function (a, b) { return b.score - a.score; });
+
+        let used = 0;
+        const fullBlocks = [];
+        const chosenFull = [];
+        const indexNames = [];
+        scored.forEach(function (s) {
+          const body = s.content.slice(0, PER_SKILL_CAP);
+          // Require >= 2 meaningful (non-generic) keyword matches to inline a skill in full. A SINGLE
+          // shared word is too weak — e.g. a "cancel subagent" skill sharing only "portfolio" with a
+          // "create a portfolio" task would otherwise load in full as a false match. Single-match skills
+          // still appear by name (the model can fetch them with get_available_skills if they truly fit).
+          const wantsFull = s.score >= 2 && chosenFull.length < MAX_FULL && (used + body.length) <= FULL_CONTENT_BUDGET;
+          if (wantsFull) {
+            fullBlocks.push(`## ${s.name}\n${body}`);
+            used += body.length;
+            chosenFull.push(s);
+          } else {
+            indexNames.push(s.name);
+          }
+        });
+
+        let block = '\n\n[LEARNED SKILLS — REUSE WHEN RELEVANT]\nYou have previously saved these reusable workflows. If one matches this task, FOLLOW its documented steps instead of working it out from scratch (adapt paths/names/values, and verify current state rather than trusting stale details).';
+        if (fullBlocks.length) block += `\n\n${fullBlocks.join('\n\n')}`;
+        if (indexNames.length) block += `\n\nOther saved skills (names only — call get_available_skills to read the full steps if one of these fits): ${indexNames.join(', ')}`;
+        learnedSkillsBlock = block;
+        // Auditable match log: which skills loaded in full and the exact keywords that matched, so the
+        // relevance selection can be sanity-checked from the console.
+        const fullAudit = chosenFull.map(function (s) { return `${s.name}[${s.matched.join('+') || '?'}]`; }).join('; ');
+        console.log(`[Subagent] Skill match for task "${String(task || '').slice(0, 70)}" -> IN FULL: ${fullAudit || '(none relevant)'} | BY NAME: ${indexNames.join(', ') || '(none)'} (of ${learnedSkills.length} total)`);
+        addSubagentMessage(`Loaded ${learnedSkills.length} saved skill(s) (${fullBlocks.length} matched in full) for possible reuse.`);
+      }
+    } catch (e) {}
+  }
+
   let history = [
     {
       role: 'user',
-      parts: [{ text: `Please perform the task: "${task}"` }]
+      parts: [{ text: `Please perform the task: "${task}"${learnedSkillsBlock}` }]
     }
   ];
 
@@ -1852,7 +2212,12 @@ When finished, you MUST call finish_task with status="success" only if the reque
             tools: subagentTools
           };
         } else {
-          const openAiMessages = createChatCompletionsMessages(history, subagentSystemInstruction);
+          // Custom endpoints (LM Studio, llama.cpp, vLLM, proxies) frequently do NOT inject the native
+          // `tools` into the model's prompt, so the model never learns it has tools and just replies with
+          // prose. For custom_openai we drive tools entirely through the system prompt (<tool_call> protocol)
+          // and recover the calls from the text — works regardless of the endpoint's native tool support.
+          const promptedToolMode = (subagentProvider === 'custom_openai');
+          const openAiMessages = createChatCompletionsMessages(history, subagentSystemInstruction, { promptedToolMode, subagentTools });
           let openAiTools = [];
           if (subagentTools && subagentTools[0] && subagentTools[0].functionDeclarations) {
             for (let t of subagentTools[0].functionDeclarations) {
@@ -1898,7 +2263,13 @@ When finished, you MUST call finish_task with status="success" only if the reque
             if (!base) throw new Error('Custom endpoint URL is not set. Add it in Settings.');
             endpointUrl = `${base}/chat/completions`;
             payload.model = subagentModel;
-            if (subagentProvider === 'custom_openai' && typeof customApiKey === 'string' && customApiKey.trim()) {
+            // Prompted tool mode: the tool list + protocol live in the system prompt, and calls are parsed
+            // from <tool_call> text. Sending native `tools` too would make some endpoints emit BOTH a native
+            // call and a text call (double execution) or silently swallow the prompt's instructions, so omit
+            // them and rely solely on the protocol. tool_choice is meaningless without native tools.
+            delete payload.tools;
+            delete payload.tool_choice;
+            if (typeof customApiKey === 'string' && customApiKey.trim()) {
               headers['Authorization'] = `Bearer ${customApiKey.trim()}`;
             }
           }
@@ -2014,12 +2385,39 @@ When finished, you MUST call finish_task with status="success" only if the reque
          let choice = json.choices && json.choices[0] && json.choices[0].message;
          if (choice) {
             let parts = [];
-            if (choice.content) parts.push({ text: choice.content });
-            if (choice.tool_calls) {
-               for (let tc of choice.tool_calls) {
+            const nativeCalls = Array.isArray(choice.tool_calls) ? choice.tool_calls : [];
+            if (nativeCalls.length > 0) {
+               // Reasoning models (minimax, ollama/deepseek, kimi, many custom endpoints) inline
+               // <think>…</think> into message.content. Strip it before it enters the subagent's history
+               // (otherwise it's echoed back every turn → context bloat + self-confusion) and before it
+               // can surface in the transcript or the result handed back to the voice model.
+               const cleanedContent = stripReasoningBlocks(choice.content);
+               if (cleanedContent) parts.push({ text: cleanedContent });
+               for (let tc of nativeCalls) {
                   let args = {};
                   try { args = JSON.parse(tc.function.arguments); } catch(e){}
                   parts.push({ functionCall: { name: tc.function.name, args: args, id: tc.id } });
+               }
+            } else {
+               // No native tool_calls. Some endpoints (LM Studio, vLLM, llama.cpp, proxies) leave the
+               // model's tool calls embedded in the text as <tool_call>{...}</tool_call> or fenced JSON.
+               // Recover them from the RAW content first (before stripping reasoning), so a custom-endpoint
+               // subagent can actually act instead of looking like it "won't call tools".
+               const knownToolNames = (subagentTools && subagentTools[0] && subagentTools[0].functionDeclarations)
+                  ? subagentTools[0].functionDeclarations.map(d => d && d.name).filter(Boolean)
+                  : [];
+               const embedded = parseTextEmbeddedToolCalls(choice.content, knownToolNames);
+               const cleanedText = stripReasoningBlocks(embedded.remainingText);
+               if (cleanedText) parts.push({ text: cleanedText });
+               for (let c of embedded.calls) {
+                  parts.push({ functionCall: { name: c.name, args: c.args, id: `embedded_${Math.random().toString(36).slice(2, 8)}` } });
+               }
+               if (embedded.calls.length > 0) {
+                  console.log(`[Subagent] Recovered ${embedded.calls.length} text-embedded tool call(s) from a custom/OpenAI-compatible endpoint (${subagentProvider}) that returned no native tool_calls: ${embedded.calls.map(c => c.name).join(', ')}.`);
+               } else if (/<tool_call>|"name"\s*:/i.test(String(choice.content || ''))) {
+                  // A tool-call marker was present but nothing parsed — surface it instead of silently
+                  // treating it as prose, so any remaining format/JSON defect is diagnosable.
+                  console.warn(`[Subagent] Saw a tool-call-like block but could NOT parse it (custom endpoint ${subagentProvider}). Raw starts: ${JSON.stringify(String(choice.content || '').slice(0, 300))}`);
                }
             }
             json = { candidates: [{ content: { parts: parts } }] };
@@ -2042,6 +2440,7 @@ When finished, you MUST call finish_task with status="success" only if the reque
 
       if (functionCalls.length > 0) {
         codexPlainTextRepairCount = 0;
+        subagentRecord.noToolTurns = 0;
         const toolResponseParts = [];
         pendingToolCallsForInterruption = functionCalls;
         pendingToolResponsePartsForInterruption = toolResponseParts;
@@ -2380,7 +2779,7 @@ When finished, you MUST call finish_task with status="success" only if the reque
               responseData = { status: 'success', output: await googleContactsList(call.args || {}, workspaceOptions) };
               addSubagentMessage('Google Contacts listed via Workspace integration.');
             } else if (call.name === 'finish_task') {
-              const finalStatus = String(call.args.status || '').toLowerCase();
+              let finalStatus = String(call.args.status || '').toLowerCase();
               const summary = call.args.summary || '';
               const verification = call.args.verification || '';
               const remainingIssues = call.args.remaining_issues || '';
@@ -2389,13 +2788,22 @@ When finished, you MUST call finish_task with status="success" only if the reque
               if (finalStatus === 'success' && typeof getSubagentFinishReadiness === 'function') {
                 const readiness = getSubagentFinishReadiness(task, finalStatus, verification, subagentRecord);
                 if (!readiness.ok) {
-                  responseData = {
-                    status: 'error',
-                    error: `FINISH_BLOCKED: ${readiness.reason}`,
-                    next_action_required: 'Run a verification tool call that proves the requested outcome, then call finish_task again.'
-                  };
-                  shouldStopForFinish = false;
-                  addSubagentMessage(`Finish blocked: ${readiness.reason}`);
+                  // Cap blocked-finish retries. Weaker models (e.g. minimax) can keep claiming success
+                  // without verifiable tool evidence and never satisfy the gate, spinning the step loop
+                  // to the max-loop limit. Allow one retry, then stop and record partial so it ends.
+                  subagentRecord.finishBlockedCount = (Number(subagentRecord.finishBlockedCount) || 0) + 1;
+                  if (subagentRecord.finishBlockedCount >= 2) {
+                    finalStatus = 'partial';
+                    addSubagentMessage(`Could not verify success after ${subagentRecord.finishBlockedCount} finish attempts; recording partial to avoid an endless loop.`);
+                  } else {
+                    responseData = {
+                      status: 'error',
+                      error: `FINISH_BLOCKED: ${readiness.reason}`,
+                      next_action_required: 'Run a verification tool call that proves the requested outcome, then call finish_task again.'
+                    };
+                    shouldStopForFinish = false;
+                    addSubagentMessage(`Finish blocked: ${readiness.reason}`);
+                  }
                 }
               }
               if (finalStatus === 'success' && shouldStopForFinish && isRepeatableLearningTask(task) && !hasReusableLearningArtifact(subagentRecord)) {
@@ -2481,17 +2889,33 @@ When finished, you MUST call finish_task with status="success" only if the reque
                   const res = await fetchWithTimeout('/api/skills/save', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ skill_name: call.args.skill_name, instructions: call.args.instructions })
+                    body: JSON.stringify({ skill_name: call.args.skill_name, instructions: stripReasoningBlocks(call.args.instructions) })
                   }, SUBAGENT_TOOL_TIMEOUT_MS, subagentRecord);
                   const json = await readFetchResponseJsonWithTimeout(res, SUBAGENT_TOOL_TIMEOUT_MS, subagentRecord);
                   responseData = json;
                   if (json.status === 'success') {
                     subagentRecord.savedSkill = true;
                   }
+                  // Make the save outcome visible in the console — saved-new (with path), merged, the
+                  // quality-guard skip (with reason), or error — so the self-improvement loop is never
+                  // a silent black box.
                   if (json.status === 'success' && json.merged_into) {
+                    console.log(`[Subagent] Skill merged into existing skill "${json.merged_into}".`);
                     addSubagentMessage(`Skill merged into existing skill "${json.merged_into}"`);
                   } else if (json.status === 'success') {
-                    addSubagentMessage(`Saved new skill: ${call.args.skill_name}`);
+                    // Surface WHY this didn't merge: the closest existing skill + its similarity scores,
+                    // so the dedup threshold can be tuned from real data instead of guesswork.
+                    const closest = json.closest_skill
+                      ? ` Closest existing: "${json.closest_skill}" (name ${json.closest_name_sim}, content ${json.closest_content_sim}) — below the merge bar.`
+                      : '';
+                    const overwrote = json.overwrote_same_name ? ' (overwrote the same-named skill)' : '';
+                    console.log(`[Subagent] Saved skill "${call.args.skill_name}"${overwrote}${json.path ? ` -> ${json.path}` : ''}.${closest}`);
+                    addSubagentMessage(`Saved skill: ${call.args.skill_name}`);
+                  } else if (json.status === 'skipped') {
+                    console.warn(`[Subagent] Skill NOT saved (quality guard): ${json.reason || json.message || 'rejected'}.`);
+                    addSubagentMessage(`Skill not saved: ${json.reason || json.message || 'rejected by quality guard'}`);
+                  } else {
+                    console.warn(`[Subagent] Skill save returned non-success:`, json);
                   }
                 }
               } catch (err) {
@@ -2500,29 +2924,7 @@ When finished, you MUST call finish_task with status="success" only if the reque
               }
             } else if (call.name === 'get_available_skills') {
               try {
-                const psCmd = `
-                  $shadowRoot = if ($scriptDir) { $scriptDir } else { Get-Location }
-                  $skillsDir = Join-Path $shadowRoot "skills"
-                  if (-not (Test-Path $skillsDir)) { "[]"; return }
-                  $dirs = Get-ChildItem -Path $skillsDir -Directory
-                  $res = @()
-                  foreach ($d in $dirs) {
-                    $instPath = Join-Path $d.FullName "instructions.txt"
-                    if (Test-Path $instPath) {
-                      $content = Get-Content $instPath -Raw
-                      if ($null -ne $content) {
-                        $res += [PSCustomObject]@{ name = $d.Name; content = $content }
-                      }
-                    }
-                  }
-                  if ($res.Count -eq 0) { "[]" } else { $res | ConvertTo-Json -Compress }
-                `;
-                const cmdJson = await runSubagentPowerShellCommand(subagentRecord, psCmd, SUBAGENT_TOOL_TIMEOUT_MS, 'skills');
-                let skills = [];
-                if (cmdJson.output && cmdJson.output.trim() && cmdJson.output.trim() !== 'Command executed successfully with no output.') {
-                  try { skills = JSON.parse(cmdJson.output.trim()); } catch (e) {}
-                }
-                if (!Array.isArray(skills)) { skills = [skills]; }
+                const skills = await fetchSubagentSkills(subagentRecord);
                 responseData = { status: 'success', skills: skills };
                 subagentRecord.checkedSkills = true;
               } catch (err) {
@@ -2617,13 +3019,44 @@ When finished, you MUST call finish_task with status="success" only if the reque
         if (shouldStopAfterTools) break;
       } else {
         const textResponse = parts.map(p => p.text).join('\n').trim();
+        // Per-step visibility: when a turn produces no tool call, log what it DID contain so a
+        // spinning subagent is diagnosable (e.g. Codex reasoning-only turns show items=["reasoning"]).
+        const itemTypes = Array.isArray(modelContent._codexResponseItems)
+          ? modelContent._codexResponseItems.map(i => i && i.type)
+          : parts.map(p => (p.functionCall ? 'functionCall' : (p.text ? 'text' : 'other')));
+        console.warn(`[Subagent] Step ${loopCount}: no tool call (textChars=${textResponse.length}, items=${JSON.stringify(itemTypes)}).${textResponse ? ` Text starts: ${JSON.stringify(textResponse.slice(0, 240))}` : ''}`);
+
+        // Codex graceful finalize: if it produced a usable plain-text answer backed by tool evidence,
+        // wrap it up as complete/partial instead of nagging for a finish_task call.
         if (isOpenAiCodexSubagentProvider(subagentProvider)) {
           codexPlainTextRepairCount++;
           if (maybeFinalizeCodexPlainTextResponse(task, subagentRecord, textResponse, codexPlainTextRepairCount)) {
             break;
           }
         }
-        addSubagentMessage('Subagent returned a plain text final answer. Requesting required finish_task call.');
+
+        // Universal no-progress guard for EVERY provider. Counts consecutive turns with no tool call —
+        // including EMPTY / reasoning-only turns (Codex at high/xhigh effort emits these: neither text
+        // nor a tool call) that would otherwise spin to the max-loop limit. After a few, stop with the
+        // best available result. Reset to 0 whenever a real tool call happens (functionCalls branch).
+        subagentRecord.noToolTurns = (Number(subagentRecord.noToolTurns) || 0) + 1;
+        if (subagentRecord.noToolTurns >= 5) {
+          const evidence = typeof getSubagentEvidenceSummary === 'function' ? getSubagentEvidenceSummary(subagentRecord, 6) : '';
+          const finalText = String(textResponse || evidence || 'Stopped after repeated turns that produced no tool call.').slice(0, 2000);
+          if ((Number(subagentRecord.successfulToolCount) || 0) > 0) {
+            partialSubagentRecord(subagentRecord, finalText, 'Model stopped taking actions before confirming completion.');
+            renderSubagentFinalBubble('Subagent Partially Completed', task, finalText);
+            notifyVoiceSessionOfPartial(task, 'The model stopped taking actions before finishing.', subagentRecord.id);
+          } else {
+            failSubagentRecord(subagentRecord, 'Model produced no tool calls (no actions) and made no progress.');
+            renderSubagentFinalBubble('Subagent Failed', task, finalText);
+            notifyVoiceSessionOfFailure(task, 'The model kept responding without taking any action.', subagentRecord.id);
+          }
+          addSubagentMessage(`Stopped after ${subagentRecord.noToolTurns} turns with no tool call to avoid an endless loop.`);
+          break;
+        }
+
+        addSubagentMessage('Subagent returned no tool call. Requesting the required next tool call or finish_task.');
         history.push({
           role: 'user',
           parts: [{ text: getPlainTextFinishRepairPrompt(subagentProvider, textResponse) }]

@@ -281,7 +281,7 @@ describe('voice setting session behavior', () => {
     expect(getLiveGenerationThinkingConfig(FALLBACK_LIVE_MODEL, 'high')).toBe(null);
   });
 
-  it('migrates previous default voice reasoning levels (high/low) to the medium default', () => {
+  it('migrates previous default voice reasoning levels (high/low) to the current default', () => {
     const fromHigh = loadLiveModelFunctions('models/gemini-3.1-flash-live-preview', 'high');
     expect(fromHigh.liveThinkingLevel).toBe('medium');
     expect(fromHigh.getStoredThinkingLevel()).toBe('medium');
@@ -478,8 +478,8 @@ describe('voice setting session behavior', () => {
     expect(screenConfig).toContain('shadow_smart_main_routing_enabled: smartMainRoutingEnabled');
     expect(screenConfig).toContain('smart_main_routing_enabled: smartMainRoutingEnabled');
     expect(liveConnection).toContain('getSmartConsultProvider');
-    expect(liveConnection).toContain('Consulting selected subagent model for subagent prompt');
-    expect(liveConnection).toContain('Subagent prompt refined by selected model');
+    expect(liveConnection).toContain('Refining subagent prompt.');
+    expect(liveConnection).toContain('Subagent prompt refined.');
     expect(liveConnection).toContain('observeSmartMainToolBatch');
     expect(liveConnection).toContain('startSmartMainBackgroundAgentFromTranscript');
     expect(liveConnection).toContain('refineSubagentInstructionWithSelectedModel');
@@ -1089,7 +1089,15 @@ describe('voice setting session behavior', () => {
     expect(indexHtml).toContain('id="onboarding-assistant-name"');
     expect(indexHtml).toContain('id="onboarding-voice"');
     expect(indexHtml).toContain('id="onboarding-accent"');
-    expect(indexHtml).toContain('id="onboarding-thinking"');
+
+    // 4 steps now: mic-check step + live "meet your voice" carousel + forced subagent connection test.
+    expect(indexHtml).toContain('data-step="4"');
+    expect(indexHtml).toContain('id="onboarding-mic-device"');
+    expect(indexHtml).toContain('id="onboarding-mic-meter-fill"');
+    expect(indexHtml).toContain('id="onboarding-voice-orb"');
+    expect(indexHtml).toContain('id="btn-voice-prev"');
+    expect(indexHtml).toContain('id="btn-voice-next"');
+    expect(indexHtml).toContain('id="btn-onboarding-test-subagent"');
 
     // Subagent setup step: provider, endpoint, key, per-provider model, and Codex sign-in.
     expect(indexHtml).toContain('id="onboarding-subagent-provider"');
@@ -1112,5 +1120,15 @@ describe('voice setting session behavior', () => {
     expect(bootUi).toContain('initOnboardingWizard();');
     // The custom endpoint auto-detects a model so it is never left with a broken model id.
     expect(bootUi).toContain('/api/openai-compat/models?endpoint=');
+
+    // Mic check, live voice carousel, and the forced subagent connection test.
+    expect(bootUi).toContain('function startOnboardingMicMeter');
+    expect(bootUi).toContain('function startOnboardingVoiceCarousel');
+    expect(bootUi).toContain('function runOnboardingSubagentTest');
+    expect(bootUi).toContain('function updateOnboardingNavGate');
+    const onboardingVoiceModule = fs.readFileSync(path.join(process.cwd(), 'src', 'scripts', '14-onboarding-voice.js'), 'utf8');
+    expect(onboardingVoiceModule).toContain('function startOnboardingVoicePreview');
+    expect(onboardingVoiceModule).toContain('function stopOnboardingVoicePreview');
+    expect(onboardingVoiceModule).toContain("responseModalities: ['AUDIO']");
   });
 });

@@ -516,11 +516,27 @@ $serverScript = {
         $startedAt = [DateTime]::UtcNow
         $proc = $null
         try {
+            # Default the command's working directory to the user's Desktop — NOT Shadow's install
+            # folder — so relative-path file writes land where the user expects and never pollute
+            # Shadow AI's own directory. Resolve Desktop via the OS (handles OneDrive-redirected
+            # Desktops); fall back to the user profile, then to the app dir only as a last resort.
+            $defaultCwd = $scriptDir
+            try {
+                $userDesktop = [Environment]::GetFolderPath('Desktop')
+                if ($userDesktop -and (Test-Path -LiteralPath $userDesktop)) {
+                    $defaultCwd = $userDesktop
+                } elseif ($env:USERPROFILE -and (Test-Path -LiteralPath $env:USERPROFILE)) {
+                    $defaultCwd = $env:USERPROFILE
+                }
+            } catch {}
+            $escapedCwd = $defaultCwd.Replace("'", "''")
             $escapedRoot = $scriptDir.Replace("'", "''")
             # Suppress the CLIXML "Preparing modules for first use" progress that PowerShell
             # writes to stderr on first cmdlet use — it is benign noise that otherwise looks
-            # like an error in the captured output.
-            $script = "`$ProgressPreference = 'SilentlyContinue'; Set-Location -LiteralPath '$escapedRoot'; " + $Command
+            # like an error in the captured output. Also expose $env:SHADOW_DIR so self-maintenance
+            # tasks can reference Shadow AI's own install folder by absolute path (the working
+            # directory is now the Desktop, not the app folder).
+            $script = "`$ProgressPreference = 'SilentlyContinue'; `$env:SHADOW_DIR = '$escapedRoot'; Set-Location -LiteralPath '$escapedCwd'; " + $Command
             $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($script))
             $proc = Start-Process -FilePath "powershell.exe" -ArgumentList @(
                 "-NoProfile",
@@ -1399,16 +1415,50 @@ try {
     function ConvertTo-ShadowReusableToken {
         param([string]$Token)
         $lower = ([string]$Token).ToLowerInvariant()
+        # Strip a trailing version/index number off a real word so "calculator2"/"calculator3" all match
+        # "calculator". Filenames like calculator2.html otherwise fork the deliverable into a brand-new
+        # token, so a second calculator never recognizes the first and saves a DUPLICATE skill. Guarded to
+        # a >=5-char alphabetic stem so model/format tokens that legitimately end in digits keep them
+        # (mp3, mp4, h264, gpt5, qwen3, etc.).
+        if ($lower -match '^([a-z]{5,})[0-9]+$') { $lower = $Matches[1] }
         switch -Regex ($lower) {
             '^(compress|compressed|compressing|compression|compressor)$' { return "compress" }
             '^(download|downloads|downloaded|downloading|downloader)$' { return "download" }
             '^(upload|uploads|uploaded|uploading|uploader)$' { return "upload" }
             '^(create|creates|created|creating|creator|build|builds|built|make|makes|made|making)$' { return "create" }
-            '^(website|websites|webpage|webpages|site|sites|html|portfolio|portfolios)$' { return "website" }
+            # NOTE: 'html' is deliberately NOT collapsed here. HTML is a FORMAT, not a deliverable.
+            # Collapsing it into "website" made an HTML calculator look like an HTML landing page and
+            # merge into it. site/portfolio/webpage ARE the "website" deliverable, so they still collapse.
+            '^(website|websites|webpage|webpages|site|sites|portfolio|portfolios)$' { return "website" }
             '^(video|videos|media|mp4|mov|mkv|webm)$' { return "video" }
             '^(file|files|folder|folders|directory|directories|path|paths)$' { return "file" }
             default { return $lower }
         }
+    }
+
+    # Generic "scaffolding" tokens (already normalized forms): they appear across many UNRELATED
+    # automations like "create a file", "open it", "run powershell", html/css/page formatting. Two
+    # skills that share ONLY these are not the same skill. A real duplicate also shares a SALIENT token:
+    # the actual subject/deliverable (calculator, website, youtube, vps, gmail, video, memories...).
+    # Salient tokens like 'website'/'video'/'download'/'upload'/'compress' are intentionally NOT here.
+    $script:ShadowGenericReusableTokens = @(
+        'create','file','html','css','page','web','app','application','open','desktop','document',
+        'confirm','verify','verification','check','ensure','render','display','show','run','execute',
+        'save','generate','write','code','script','browser','window','content','command','powershell',
+        'output','start','process','resolve','childitem','line','item','value','add','set','get','use',
+        'put','place','style','styling','inline','simple','working','functional','complete','proper','view'
+    )
+
+    # Count how many SALIENT (non-scaffolding) tokens two token sets share. Used to gate skill merges:
+    # a merge requires >= 1 shared salient token so distinct deliverables (calculator vs landing page)
+    # never merge just because both "create an html file on the desktop and open it".
+    function Get-ShadowSalientSharedCount {
+        param([string[]]$TokensA, [string[]]$TokensB)
+        $generic = $script:ShadowGenericReusableTokens
+        $a = @($TokensA | Sort-Object -Unique)
+        $b = @($TokensB | Sort-Object -Unique)
+        $shared = @($a | Where-Object { ($b -contains $_) -and ($generic -notcontains $_) })
+        return $shared.Count
     }
 
     function Get-ShadowReusableTokens {
@@ -1466,6 +1516,12 @@ try {
         $requestAllTokens = @(Get-ShadowReusableTokens @($RequestName, $RequestText))
         $best = $null
         $bestScore = 0.0
+        # Track the closest candidate REGARDLESS of threshold, so a near-miss can be logged (why a merge
+        # didn't fire) instead of silently saving a duplicate.
+        $closestName = ''
+        $closestNameSim = 0.0
+        $closestContentSim = 0.0
+        $closestCombined = 0.0
 
         Get-ChildItem -Path $RootDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
             if ($ExcludeName -and $_.Name -eq $ExcludeName) { return }
@@ -1481,10 +1537,48 @@ try {
             $nameSimilarity = Get-ShadowReusableSimilarity $requestNameTokens $candidateNameTokens
             $contentSimilarity = Get-ShadowReusableSimilarity $requestAllTokens $candidateAllTokens
 
+            $combined = [Math]::Max($nameSimilarity.score, $contentSimilarity.score)
+            if ($combined -gt $closestCombined) {
+                $closestCombined = $combined
+                $closestName = $_.Name
+                $closestNameSim = $nameSimilarity.score
+                $closestContentSim = $contentSimilarity.score
+            }
+
+            # Hard gate, evaluated PER PATH: never merge unless the two skills share at least one SALIENT
+            # (non-scaffolding) token in the dimension that triggers the merge. This stops
+            # "create_single_html_calculator" from merging into "create_basic_html_css_landing_page":
+            # their NAMES share only generic scaffolding (create, html), so the name path is blocked even
+            # though their instructions coincidentally share a scaffolding word like "renders". The real
+            # subjects (calculator vs landing) never overlap. A name-path merge needs a salient NAME token;
+            # a content-path merge needs a salient CONTENT token.
+            $nameSalientShared = Get-ShadowSalientSharedCount $requestNameTokens $candidateNameTokens
+            $contentSalientShared = Get-ShadowSalientSharedCount $requestAllTokens $candidateAllTokens
             $score = 0.0
-            if ($nameSimilarity.score -ge 0.6 -and ($nameSimilarity.matches -ge 2 -or $nameSimilarity.score -ge 0.85)) {
+            # Name-path merge: share a SALIENT name token (the deliverable: calculator, portfolio, vps...)
+            # AND share >= 2 name tokens total (or be near-identical). The 0.6 score floor was REMOVED: the
+            # salient gate already prevents wrong merges (calculator never shares a salient token with
+            # landing/static-site), so the floor only caused FALSE NEGATIVES — two genuine calculator skills
+            # whose auto-names diverged (e.g. "create_folder_named_calculator" vs
+            # "create_basic_calculator_standalone_html") scored ~0.5 and wrongly stayed separate as
+            # duplicates. Requiring 2 shared name tokens still stops a lone shared subject from merging two
+            # DIFFERENT operations on it (connect_to_vps vs take_vps_domain_offline share only "vps").
+            if ($nameSalientShared -ge 1 -and ($nameSimilarity.matches -ge 2 -or $nameSimilarity.score -ge 0.85)) {
                 $score = $nameSimilarity.score
-            } elseif ($contentSimilarity.score -ge 0.75 -and $contentSimilarity.matches -ge 4) {
+            } elseif ($nameSalientShared -ge 1 -and $contentSalientShared -ge 1 -and $contentSimilarity.score -ge 0.55 -and $contentSimilarity.matches -ge 5) {
+                # CONTENT-path merge now ALSO requires a shared salient NAME token. Without this, a bloated
+                # skill (e.g. a calculator skill that absorbed calc1/2/3) shares so much scaffolding +
+                # structural words (self-contained, single, inline css, desktop, html...) with ANY html-file
+                # task that an unrelated "portfolio website" matched it on content alone. Requiring the names
+                # to share the actual subject (calculator vs portfolio differ) blocks that, while two genuine
+                # same-deliverable skills still share the subject word in their (deliverable-led) names.
+                # Content path catches near-duplicates whose auto-generated NAMES diverged (e.g. several
+                # "create a portfolio website on the desktop" skills). Set at 0.6 because a merge only
+                # APPENDS the new steps to the existing skill (never overwrites) — so a borderline merge
+                # just puts two related workflows in one file, not lost content. The matches>=5 floor
+                # keeps incidental overlap (e.g. distinct VPS skills sharing infra vocabulary) from
+                # triggering a false merge. The save-skill log prints the closest score so this can be
+                # tuned from real data.
                 $score = $contentSimilarity.score
             }
 
@@ -1499,7 +1593,12 @@ try {
             }
         }
 
-        return $best
+        return [PSCustomObject]@{
+            Match = $best
+            ClosestName = $closestName
+            ClosestNameSim = [Math]::Round([double]$closestNameSim, 2)
+            ClosestContentSim = [Math]::Round([double]$closestContentSim, 2)
+        }
     }
 
     while ($listener.IsListening) {
@@ -1560,6 +1659,57 @@ try {
                     continue
                 }
                 Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405
+                continue
+            }
+
+            # Push-to-talk: arm/disarm the global key poll. The UI POSTs the enabled flag and the
+            # bound Windows virtual-key code; the poll runspace then watches that key globally.
+            if ($urlPath -eq "/api/ptt/config") {
+                if ($request.HttpMethod -eq "OPTIONS") {
+                    Add-ShadowCorsOrigin $response
+                    $response.Headers.Add("Access-Control-Allow-Methods", "POST, OPTIONS")
+                    $response.Headers.Add("Access-Control-Allow-Headers", "Content-Type")
+                    $response.StatusCode = 200; $response.Close(); continue
+                }
+                if ($request.HttpMethod -eq "POST") {
+                    try {
+                        $reader = New-Object System.IO.StreamReader($request.InputStream)
+                        $payload = $reader.ReadToEnd() | ConvertFrom-Json
+                        $pttState.enabled = [bool]$payload.enabled
+                        $vkVal = 0; [void][int]::TryParse([string]$payload.vk, [ref]$vkVal)
+                        $pttState.vk = $vkVal
+                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success"; supported = [bool]$pttState.supported }) 200
+                    } catch {
+                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = $_.Exception.Message }) 200
+                    }
+                    continue
+                }
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405
+                continue
+            }
+
+            # Push-to-talk: snapshot of current key state (used once on connect to seed the long-poll).
+            if ($urlPath -eq "/api/ptt/state") {
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{
+                    status = "success"; supported = [bool]$pttState.supported; enabled = [bool]$pttState.enabled
+                    vk = [int]$pttState.vk; held = [bool]$pttState.held; seq = [int]$pttState.seq
+                }) 200
+                continue
+            }
+
+            # Push-to-talk: long-poll that returns the instant the bound key's pressed/released state
+            # changes past the caller's 'since' sequence (or after a ~25s heartbeat). Near-zero latency
+            # without the UI hammering the server with rapid polls.
+            if ($urlPath -eq "/api/ptt/wait") {
+                $sinceVal = -1
+                try { if ($request.QueryString["since"]) { [void][int]::TryParse([string]$request.QueryString["since"], [ref]$sinceVal) } } catch {}
+                $deadline = (Get-Date).AddSeconds(25)
+                while (([int]$pttState.seq -le $sinceVal) -and ((Get-Date) -lt $deadline) -and $listener.IsListening) {
+                    Start-Sleep -Milliseconds 10
+                }
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{
+                    status = "success"; held = [bool]$pttState.held; seq = [int]$pttState.seq; supported = [bool]$pttState.supported
+                }) 200
                 continue
             }
 
@@ -2317,6 +2467,7 @@ try {
                         # library stays clean (the same over-eager-capture the memory system had).
                         $combinedSkillText = "$skillName`n$instructions"
                         $normInstr = ($instructions -replace '\s+', ' ').Trim()
+                        $nameSalientCount = @(Get-ShadowReusableTokens @($safeName) | Where-Object { $script:ShadowGenericReusableTokens -notcontains $_ }).Count
                         $skillRejectReason = $null
                         if ($normInstr.Length -lt 80) {
                             $skillRejectReason = "too short to be a reusable multi-step procedure"
@@ -2330,18 +2481,34 @@ try {
                             $skillRejectReason = "a trivial one-liner lookup, not a reusable workflow"
                         } elseif ($safeName -match '(?i)(^|_)(think|thinks|thinking|wonder|wondering|guess|figure_?out|not_?sure|trying_?to|user_?wants|wants_?to|maybe|probably|unsure)(_|$)') {
                             $skillRejectReason = "reads as a vague intention or the model's own reasoning, not a concrete repeatable procedure"
+                        } elseif ($nameSalientCount -eq 0) {
+                            # The name is only scaffolding words (create/file/html/open/page/run) with no
+                            # concrete subject. Such a name is neither accurate nor findable later.
+                            $skillRejectReason = "the name has no specific subject; name it after the concrete deliverable or target (e.g. download_youtube_audio, deploy_landing_page_to_vps), not generic words like create/file/html"
                         }
                         if ($skillRejectReason) {
                             $resObj = [PSCustomObject]@{ status = "skipped"; message = "Skill not saved ($skillRejectReason). Save only repeatable, multi-step automations worth reusing later."; reason = $skillRejectReason }
                         }
 
+                        $skillFindResult = $null
+                        # If a skill with this EXACT name already exists, it takes precedence: update it
+                        # (handled by the save path below, which overwrites the same-name file). We must NOT
+                        # let a fuzzy match to a DIFFERENT skill hijack the merge — that is what made a
+                        # second "portfolio_demo" save merge into the unrelated "calculator" skill, because
+                        # -ExcludeName hid the real same-named skill and the next-best fuzzy match won.
+                        $sameNameSkillExists = Test-Path (Join-Path $skillsDir $safeName) -PathType Container
                         if (-not $resObj) {
-                            $skillMatch = Find-ShadowReusableArtifact -RootDir $skillsDir -Kind "skill" -RequestName $safeName -RequestText $instructions -ExcludeName $safeName
+                            $skillFindResult = Find-ShadowReusableArtifact -RootDir $skillsDir -Kind "skill" -RequestName $safeName -RequestText $instructions -ExcludeName $safeName
+                            $skillMatch = if ($skillFindResult -and -not $sameNameSkillExists) { $skillFindResult.Match } else { $null }
                             if ($skillMatch) {
                                 $existingInstPath = Join-Path $skillMatch.Path "instructions.txt"
                                 if (Test-Path $existingInstPath -PathType Leaf) {
                                     $existingContent = Get-Content $existingInstPath -Raw -ErrorAction SilentlyContinue
-                                    if ((($existingContent -replace '\s+', ' ').Trim().ToLower()).Contains($normInstr.ToLower())) {
+                                    # "Already covered" if the new steps are an exact substring OR a near-duplicate
+                                    # of the existing content. The similarity check keeps the file from bloating with
+                                    # back-to-back "--- Updated ---" sections that just restate the same procedure.
+                                    $instrSim = Get-ShadowReusableSimilarity @(Get-ShadowReusableTokens @($instructions)) @(Get-ShadowReusableTokens @($existingContent))
+                                    if ((($existingContent -replace '\s+', ' ').Trim().ToLower()).Contains($normInstr.ToLower()) -or $instrSim.score -ge 0.85) {
                                         $resObj = [PSCustomObject]@{ status = "success"; message = "Skill already covered by '$($skillMatch.Name)'; left unchanged."; merged_into = $skillMatch.Name; merged_kind = "skill" }
                                     } else {
                                         $mergedInstructions = "$existingContent`n`n--- Updated ---`n$instructions"
@@ -2352,38 +2519,10 @@ try {
                             }
                         }
 
-                        $stopWords = @('a','an','the','and','or','but','in','on','at','to','for','of','with','by','from','is','it','my')
-                        $newKeywords = @(($safeName -split '_') | Where-Object { $_.Length -gt 2 -and $stopWords -notcontains $_.ToLower() } | ForEach-Object { $_.ToLower() })
-
-                        # Check for similar existing skill (60%+ keyword overlap)
-                        if (-not $resObj -and $newKeywords.Count -gt 0) {
-                            $skillsDir = Join-Path $scriptDir "skills"
-                            if (Test-Path $skillsDir -PathType Container) {
-                                $existingDirs = Get-ChildItem -Path $skillsDir -Directory -ErrorAction SilentlyContinue
-                                foreach ($ed in $existingDirs) {
-                                    if ($ed.Name -eq $safeName) { continue }
-                                    $existingKeywords = @(($ed.Name -split '_') | Where-Object { $_.Length -gt 2 -and $stopWords -notcontains $_.ToLower() } | ForEach-Object { $_.ToLower() })
-                                    if ($existingKeywords.Count -eq 0) { continue }
-                                    $matchCount = 0
-                                    foreach ($kw in $newKeywords) { if ($existingKeywords -contains $kw) { $matchCount++ } }
-                                    $overlap = $matchCount / [Math]::Max($existingKeywords.Count, 1)
-                                    if ($overlap -ge 0.6) {
-                                        $existingInstPath = Join-Path $ed.FullName "instructions.txt"
-                                        if (Test-Path $existingInstPath -PathType Leaf) {
-                                            $existingContent = Get-Content $existingInstPath -Raw -ErrorAction SilentlyContinue
-                                            if ((($existingContent -replace '\s+', ' ').Trim().ToLower()).Contains($normInstr.ToLower())) {
-                                                $resObj = [PSCustomObject]@{ status = "success"; message = "Skill already covered by '$($ed.Name)'; left unchanged."; merged_into = $ed.Name; merged_kind = "skill" }
-                                            } else {
-                                                $mergedInstructions = "$existingContent`n`n--- Updated ---`n$instructions"
-                                                [System.IO.File]::WriteAllText($existingInstPath, $mergedInstructions, [System.Text.Encoding]::UTF8)
-                                                $resObj = [PSCustomObject]@{ status = "success"; message = "Skill merged into existing similar skill '$($ed.Name)'"; merged_into = $ed.Name; merged_kind = "skill" }
-                                            }
-                                            break
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        # (Removed a second, looser keyword-overlap merge path that used a tiny stopword
+                        # list and merged on bare name-token overlap. It was redundant with the
+                        # salient-gated Find-ShadowReusableArtifact above and was a source of wrong merges:
+                        # two merge heuristics with different vocabularies disagreeing. One mechanism now.)
 
                         # No merge found â€” save as new skill
                         if (-not $resObj) {
@@ -2394,8 +2533,18 @@ try {
                             $resolvedSkillsDir = [System.IO.Path]::GetFullPath($skillsDir)
                             if (-not $resolvedSkillFile.StartsWith($resolvedSkillsDir)) { throw "Path traversal blocked." }
                             if (-not (Test-Path $skillDir)) { New-Item -ItemType Directory -Path $skillDir -Force | Out-Null }
+                            $alreadyExisted = Test-Path $skillFile -PathType Leaf
                             [System.IO.File]::WriteAllText($skillFile, $instructions, [System.Text.Encoding]::UTF8)
-                            $resObj = [PSCustomObject]@{ status = "success"; message = "Skill saved as $safeName"; skill_name = $safeName }
+                            $resObj = [PSCustomObject]@{
+                                status = "success"
+                                message = if ($alreadyExisted) { "Skill '$safeName' overwritten (same name)" } else { "Skill saved as $safeName" }
+                                skill_name = $safeName
+                                path = $resolvedSkillFile
+                                overwrote_same_name = [bool]$alreadyExisted
+                                closest_skill = if ($skillFindResult) { [string]$skillFindResult.ClosestName } else { "" }
+                                closest_name_sim = if ($skillFindResult) { $skillFindResult.ClosestNameSim } else { 0 }
+                                closest_content_sim = if ($skillFindResult) { $skillFindResult.ClosestContentSim } else { 0 }
+                            }
                         }
 
                         $resJson = $resObj | ConvertTo-Json -Compress
@@ -3564,6 +3713,68 @@ try {
         }
 }
 
+# --- Push-to-talk: global key state ---
+# A dedicated runspace polls the OS-level state of the user's chosen push-to-talk key via
+# GetAsyncKeyState (which reads the global async key state regardless of which window has focus)
+# and bumps a sequence counter on every press/release edge. The /api/ptt/wait long-poll lets the
+# UI learn of an edge in ~15-30ms so it can open/close the mic. We poll a SINGLE bound key, not a
+# system-wide keyboard hook (WH_KEYBOARD_LL) — far lighter and far less keylogger-like, which
+# matters for an unsigned installer. If Add-Type is blocked, PTT degrades to focused-window-only
+# (the front-end keydown/keyup fallback) and 'supported' reports false.
+$pttState = [hashtable]::Synchronized(@{
+    run       = $true
+    enabled   = $false
+    vk        = 0
+    held      = $false
+    seq       = 0
+    supported = $false
+})
+try {
+    if (-not ([System.Management.Automation.PSTypeName]'ShadowPTT.Keys').Type) {
+        Add-Type -Namespace 'ShadowPTT' -Name 'Keys' -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern short GetAsyncKeyState(int vKey);
+'@
+    }
+    $pttState.supported = $true
+} catch {
+    $pttState.supported = $false
+}
+
+if ($pttState.supported) {
+    $pttPollScript = {
+        $prevDown = $false
+        $prevVk = 0
+        while ($pttState.run) {
+            try {
+                $vk = [int]$pttState.vk
+                if ($pttState.enabled -and $vk -gt 0) {
+                    if ($vk -ne $prevVk) { $prevDown = $false; $prevVk = $vk }
+                    $down = ([ShadowPTT.Keys]::GetAsyncKeyState($vk) -band 0x8000) -ne 0
+                    if ($down -ne $prevDown) {
+                        $prevDown = $down
+                        $pttState.held = $down
+                        $pttState.seq = [int]$pttState.seq + 1
+                    }
+                } else {
+                    if ($pttState.held) {
+                        $pttState.held = $false
+                        $pttState.seq = [int]$pttState.seq + 1
+                    }
+                    $prevDown = $false
+                    $prevVk = 0
+                }
+            } catch {}
+            Start-Sleep -Milliseconds 8
+        }
+    }
+    $pttSessionState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    $pttSessionState.Variables.Add((New-Object System.Management.Automation.Runspaces.SessionStateVariableEntry("pttState", $pttState, "Push-to-talk shared state")))
+    $pttRunspaceThread = [PowerShell]::Create($pttSessionState)
+    $null = $pttRunspaceThread.AddScript($pttPollScript)
+    $null = $pttRunspaceThread.BeginInvoke()
+}
+
 $powershellThreads = @()
 for ($i = 0; $i -lt 8; $i++) {
     $threadSessionState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
@@ -3572,6 +3783,7 @@ for ($i = 0; $i -lt 8; $i++) {
     $threadSessionState.Variables.Add((New-Object System.Management.Automation.Runspaces.SessionStateVariableEntry("browserControllerPort", $browserControllerPort, "Browser controller port")))
     $threadSessionState.Variables.Add((New-Object System.Management.Automation.Runspaces.SessionStateVariableEntry("port", $port, "Shadow web server port")))
     $threadSessionState.Variables.Add((New-Object System.Management.Automation.Runspaces.SessionStateVariableEntry("serverStartedAt", $serverStartedAt, "Shadow server start time")))
+    $threadSessionState.Variables.Add((New-Object System.Management.Automation.Runspaces.SessionStateVariableEntry("pttState", $pttState, "Push-to-talk shared state")))
 
     $thread = [PowerShell]::Create($threadSessionState)
     $null = $thread.AddScript($serverScript)
@@ -3687,7 +3899,7 @@ if ($chromePath) {
     } catch {}
     $chromeArgs = @(
         "--app=$url",
-        "--window-size=960,720",
+        "--window-size=960,800",
         "--user-data-dir=$appProfileDir",
         "--no-first-run",
         "--no-default-browser-check",
@@ -3736,6 +3948,9 @@ if ($schedulerProc -and -not $schedulerProc.HasExited) {
 if ($searxngProc -and -not $searxngProc.HasExited) {
     Stop-Process -Id $searxngProc.Id -Force -ErrorAction SilentlyContinue
 }
+
+if ($pttState) { $pttState.run = $false }
+if ($pttRunspaceThread) { try { $pttRunspaceThread.Dispose() } catch {} }
 
 if ($serverType -eq "powershell") {
     $listener.Stop()

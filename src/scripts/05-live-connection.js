@@ -230,11 +230,12 @@ async function refineSubagentInstructionWithSelectedModel(kind, text, context = 
   if (!rawText) throw new Error('Subagent instruction is empty.');
   if (!smartMainRoutingEnabled || typeof runSubagentPromptRefinement !== 'function') return rawText;
 
-  // The selected subagent model refines its own prompt — including local models (Ollama,
-  // LM Studio). No dumbing-down or routing through a weaker model.
+  // Refine the prompt with the user's SELECTED subagent model — that's the whole point (they chose it
+  // because it prompts better than the realtime voice model). Retry once on an empty result, and if it
+  // still comes back empty the caller falls back to the original task so the spawn is never lost.
   const smartProvider = typeof getSmartConsultProvider === 'function' ? getSmartConsultProvider() : subagentProvider;
   const smartModel = typeof getSmartConsultModel === 'function' ? getSmartConsultModel() : (subagentModel || 'gpt-5.5');
-  console.log('[Smart] Consulting selected subagent model for subagent prompt.', {
+  console.log('[Smart] Refining subagent prompt.', {
     kind,
     provider: smartProvider,
     model: smartModel,
@@ -243,14 +244,17 @@ async function refineSubagentInstructionWithSelectedModel(kind, text, context = 
   addSystemMessage(`[Smart] Refining subagent ${kind} with ${smartProvider} / ${smartModel}...`);
   subagentPromptRefinementInProgress = true;
   try {
-    const result = await runSubagentPromptRefinement({
-      kind,
-      text: rawText,
-      ...context
-    });
+    let result;
+    try {
+      result = await runSubagentPromptRefinement({ kind, text: rawText, ...context });
+    } catch (firstErr) {
+      if (!/empty text/i.test(String(firstErr && firstErr.message))) throw firstErr;
+      console.warn('[Smart] Refinement returned empty text; retrying once.', firstErr);
+      result = await runSubagentPromptRefinement({ kind, text: rawText, ...context });
+    }
     const refined = String((result && result.text) || '').trim();
     if (!refined) throw new Error('Subagent prompt refinement returned empty text.');
-    console.log('[Smart] Subagent prompt refined by selected model.', {
+    console.log('[Smart] Subagent prompt refined.', {
       kind,
       provider: (result && result.provider) || smartProvider,
       model: (result && result.model) || smartModel,
@@ -285,6 +289,7 @@ async function startSmartMainBackgroundAgentFromTranscript(prompt, routingReason
   }
 
   noteSmartMainRoutingTool('spawn_background_agent');
+  spawnedSubagentThisTurn = true;
   addSystemMessage(`[Smart] Routing executable work to background subagent: ${routingReason}`);
   if (taskSafety.changed) {
     addSystemMessage('[Subagent] Delegation task sanitized to avoid passing credentials or forbidden routing hints.');
@@ -297,12 +302,26 @@ async function startSmartMainBackgroundAgentFromTranscript(prompt, routingReason
   const subagentRecord = createSubagentRecord(initialTask);
   activeSubagents.push(subagentRecord);
   updateSubagentIndicator();
+  // Play the spawn chime NOW, the moment work is requested — not after the (possibly slow) prompt
+  // refinement consult. Waiting for refinement made the alert feel late, and before the refinement
+  // fallback existed a failed consult meant it never played at all.
+  if (typeof playNotificationChime === 'function') playNotificationChime('start');
 
   (async () => {
     try {
       subagentRecord.lastMessage = 'Refining task with the subagent model...';
       if (typeof refreshSubagentProgressState === 'function') refreshSubagentProgressState(subagentRecord);
-      let taskForSubagent = await refineSubagentInstructionWithSelectedModel('spawn', initialTask, { routing_reason: routingReason });
+      let taskForSubagent;
+      try {
+        taskForSubagent = await refineSubagentInstructionWithSelectedModel('spawn', initialTask, { routing_reason: routingReason });
+      } catch (refineErr) {
+        // Prompt-brain refinement is best-effort. If it fails (provider auth/API hiccup, timeout,
+        // empty result), run the subagent with the ORIGINAL task instead of aborting the whole
+        // spawn — otherwise a flaky refinement makes every spawn instantly fail at startup.
+        console.warn('[Smart] Subagent prompt refinement failed; running with the original task.', refineErr);
+        addSystemMessage('[Subagent] Prompt refinement unavailable; running with the original task.');
+        taskForSubagent = initialTask;
+      }
       taskForSubagent = sanitizeSubagentTaskForDelegation(taskForSubagent, getRecentUserUtteranceText()).task;
       if (!String(taskForSubagent || '').trim()) taskForSubagent = initialTask;
       subagentRecord.task = taskForSubagent;
@@ -1811,7 +1830,8 @@ async function connect() {
           } else if (call.name === 'get_available_skills') {
                 try {
                   const psCmd = `
-                    $skillsDir = Join-Path (Get-Location) "skills"
+                    $shadowRoot = if ($env:SHADOW_DIR) { $env:SHADOW_DIR } else { Get-Location }
+                    $skillsDir = Join-Path $shadowRoot "skills"
                     if (-not (Test-Path $skillsDir)) { "[]"; return }
                     $dirs = Get-ChildItem -Path $skillsDir -Directory
                     $res = @()
@@ -2215,6 +2235,26 @@ async function connect() {
           const bubble = document.querySelector('.current-ai-bubble');
           if (bubble) bubble.classList.remove('current-ai-bubble');
           if (currentAITranscript) rememberDialogueTurn('Assistant', currentAITranscript);
+
+          // Deterministic guard against the "I spawned a subagent" hallucination: if the model just
+          // TOLD the user it started/spawned background work but no spawn_background_agent ran this turn
+          // and nothing is actually active, inject a correction so it either calls the tool now or
+          // retracts — rather than leaving the user believing work is underway when it isn't.
+          try {
+            const aiSaid = String(currentAITranscript || '').toLowerCase();
+            const claimedBackgroundStart =
+              /\bin the background\b/.test(aiSaid) ||
+              /\b(spawn|spawning|spawned|spun up|spin(?:ning)? up|kick(?:ed|ing)? off|set(?:ting)? up|fired? up|launch(?:ed|ing)?)\b[^.!?]{0,40}\b(sub-?agent|background|agent)\b/.test(aiSaid) ||
+              /\b(sub-?agent|background (?:agent|task|worker|job))\b[^.!?]{0,40}\b(started|running|on it|working on|underway|now)\b/.test(aiSaid);
+            const offering = /\b(if you (?:want|like|'d like|wish|prefer)|would you like|do you want|want me to|should i\b|i can\b|i could\b)\b/.test(aiSaid);
+            const anyActive = Array.isArray(activeSubagents) && activeSubagents.some(s => s && (s.status === 'running' || s.status === 'waiting_auth'));
+            if (claimedBackgroundStart && !offering && !spawnedSubagentThisTurn && !anyActive && typeof queueSchedulerMessage === 'function') {
+              console.warn('[Smart] Background-work claim detected with no spawn this turn and no active subagent — injecting correction.');
+              queueSchedulerMessage('[SYSTEM NOTICE - DO NOT READ VERBATIM] You just told the user you were starting or spawning background work, but you did NOT call spawn_background_agent this turn and no subagent is running. Either call spawn_background_agent NOW for that request, or tell the user plainly that you have not actually started it yet. Never claim background work is underway when it is not.', { lane: 'critical', critical: true, ttlMs: 60000, dedupeKey: 'false-spawn-claim' });
+            }
+          } catch (e) {}
+          spawnedSubagentThisTurn = false;
+
           aiTranscriptFinalized = true;
           suppressInterruptedTurnAudio = false;
           clearServerInterruptPending();

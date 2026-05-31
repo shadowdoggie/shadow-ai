@@ -174,14 +174,14 @@ describe('Codex Responses subagent adapter', () => {
     ]);
     expect(payload.input[1].encrypted_content).toBe('encrypted');
     expect(payload.input[3].call_id).toBe('call_1');
-    expect(payload.reasoning).toEqual({ effort: 'medium', summary: 'auto' });
+    expect(payload.reasoning).toEqual({ effort: 'high', summary: 'auto' });
     expect(payload.parallel_tool_calls).toBe(false);
     expect(payload.instructions).toContain('Every assistant turn MUST do exactly one of these');
     expect(payload.instructions).toContain('Do NOT make multiple tool calls in one response');
     expect(payload.instructions).toContain('stop after 8 total web_search calls');
     expect(buildCodexSubagentInstructions('base')).toContain('base');
     expect(buildCodexSubagentInstructions('base', 10)).toContain('stop after 10 total web_search calls');
-    expect(getCodexSubagentReasoning('gpt-5.5')).toEqual({ effort: 'medium', summary: 'auto' });
+    expect(getCodexSubagentReasoning('gpt-5.5')).toEqual({ effort: 'high', summary: 'auto' });
   });
 
   it('builds chat-completions history with stable tool ids and safe empty args', () => {
@@ -235,7 +235,7 @@ describe('Codex Responses subagent adapter', () => {
     });
   });
 
-  it('omits Codex reasoning when disabled and caps very high modes for tool work', () => {
+  it('omits Codex reasoning when disabled and honors the selected effort for tool work', () => {
     const { getCodexSubagentReasoning } = loadRunnerFunctions(['getCodexSubagentReasoning'], {
       OPENAI_CODEX_REASONING_MODES: new Set(['none', 'low', 'medium', 'high', 'xhigh']),
       OPENAI_CODEX_REASONING_MODELS: new Set(['gpt-5.5', 'gpt-5.4']),
@@ -251,7 +251,7 @@ describe('Codex Responses subagent adapter', () => {
       subagentReasoningMode: 'xhigh'
     });
 
-    expect(getXHighReasoning('gpt-5.5')).toEqual({ effort: 'medium', summary: 'auto' });
+    expect(getXHighReasoning('gpt-5.5')).toEqual({ effort: 'xhigh', summary: 'auto' });
   });
 
   it('builds a foreground smart-consult payload for voice answers', () => {

@@ -248,7 +248,19 @@ class AudioRecorder {
   // default mic instead of failing outright.
   async _getMicStream() {
     const baseAudio = { echoCancellation: true, noiseSuppression: true, autoGainControl: false, channelCount: 1 };
-    const wantId = (typeof selectedMicDeviceId === 'string' && selectedMicDeviceId) ? selectedMicDeviceId : '';
+    let wantId = (typeof selectedMicDeviceId === 'string' && selectedMicDeviceId) ? selectedMicDeviceId : '';
+    // Only constrain to the saved device when it's ACTUALLY present right now. A saved device that is
+    // currently absent (unplugged, or a virtual mic like NVIDIA Broadcast whose app isn't running)
+    // lists fine in Settings but would throw OverconstrainedError on every connect. In that case use
+    // the default this time WITHOUT erasing the saved preference, so it's used again once it returns.
+    if (wantId && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+      try {
+        const inputs = (await navigator.mediaDevices.enumerateDevices()).filter(function (d) { return d.kind === 'audioinput'; });
+        const idsExposed = inputs.some(function (d) { return d.deviceId; });
+        const present = inputs.some(function (d) { return d.deviceId === wantId; });
+        if (idsExposed && !present) wantId = '';
+      } catch (e) {}
+    }
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
@@ -321,6 +333,15 @@ class AudioRecorder {
 
         let inputData = e.inputBuffer.getChannelData(0);
 
+        // Push-to-talk gate. When a key is bound:
+        //  - held (or within the brief release tail) -> force the mic open, bypassing the VAD/echo gate.
+        //  - not held -> fall through to the noise gate and stream continuous SILENCE (never nothing).
+        //    Gemini Live's server VAD needs an unbroken audio stream to detect end-of-speech; dropping
+        //    frames entirely makes turns finalize painfully slowly and segment erratically.
+        const pttArmed = (typeof pttIsArmed === 'function') && pttIsArmed();
+        const pttGateClosed = pttArmed && !pttIsOpen();
+        const pttForcePass = pttArmed && !pttGateClosed;
+
         // Analyze volume for user audio activity & dynamic echo gate
         const micLevel = this.getVolume();
         const playVolume = (audioPlayer && typeof audioPlayer.getVolume === 'function') ? audioPlayer.getVolume() : 0;
@@ -333,11 +354,17 @@ class AudioRecorder {
 
         const micAboveThreshold = micLevel >= dynamicThreshold;
         const playbackActiveForBargeIn = isPlaybackActiveForBargeIn();
-        const activeWorkForBargeIn = typeof isLiveWorkActiveForVoiceBargeIn === 'function'
-          ? isLiveWorkActiveForVoiceBargeIn()
-          : playbackActiveForBargeIn;
+        // PTT gate closed -> the user is not holding the key, so there is no barge-in: forcing this
+        // false skips the barge-in block, the pre-roll buffering branch, and the interrupt signal, so
+        // we simply stream silence below.
+        const activeWorkForBargeIn = pttGateClosed
+          ? false
+          : (typeof isLiveWorkActiveForVoiceBargeIn === 'function'
+            ? isLiveWorkActiveForVoiceBargeIn()
+            : playbackActiveForBargeIn);
         const micAboveCandidateThreshold = micLevel >= candidateThreshold;
-        let shouldPassMicAudio = micAboveThreshold;
+        // PTT gate closed -> never pass the user's audio (we stream silence below). PTT held -> always pass.
+        let shouldPassMicAudio = pttGateClosed ? false : (micAboveThreshold || pttForcePass);
         let shouldBufferLocalBargeInAudio = false;
         let shouldFlushLocalBargeInPreroll = false;
         let shouldSendLocalBargeInInterruptSignal = false;
@@ -353,6 +380,11 @@ class AudioRecorder {
           shouldSendLocalBargeInInterruptSignal = triggeredLocalBargeIn;
         }
 
+        // While the PTT key is held, the user is deliberately talking — always stream their audio
+        // (the barge-in block above may still fire its interrupt so holding to talk cuts the AI off).
+        if (pttForcePass) shouldPassMicAudio = true;
+        if (pttGateClosed) shouldPassMicAudio = false;
+
         if (shouldPassMicAudio) {
           markUserAudioActivity('microphone');
         } else if (!micAboveCandidateThreshold) {
@@ -364,6 +396,9 @@ class AudioRecorder {
         // Apply noise gate at all times to prevent background noise from keeping the server VAD open indefinitely,
         // and to prevent server-side false VAD barge-ins when AI is speaking.
         if (!shouldPassMicAudio) {
+          // When PTT is closed, activeWorkForBargeIn is forced false above, so we skip pre-roll
+          // buffering and just stream silence — the server keeps a continuous stream and finalizes
+          // the user's turn promptly instead of stalling.
           if (activeWorkForBargeIn) {
             if (shouldBufferLocalBargeInAudio) {
               const bufferedData = this.resample(inputData, inputSampleRate, targetSampleRate);
@@ -451,8 +486,16 @@ class AudioRecorder {
     return window.btoa(binary);
   }
 
+  // The mic stream stays live even when PTT is closed (we gate what's SENT, not the capture), so
+  // treat a closed PTT gate like mute for visualization — otherwise the blob reacts to the user's
+  // voice while the key isn't held, making it look like Shadow is listening when it isn't.
+  _inputSilencedForVisuals() {
+    if (isMuted) return true;
+    return (typeof pttIsArmed === 'function' && pttIsArmed() && typeof pttIsOpen === 'function' && !pttIsOpen());
+  }
+
   getVolume() {
-    if (!this.analyser || isMuted) return 0;
+    if (!this.analyser || this._inputSilencedForVisuals()) return 0;
     const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
     this.analyser.getByteFrequencyData(dataArray);
     let sum = 0;
@@ -463,7 +506,7 @@ class AudioRecorder {
   }
 
   getFrequencyData() {
-    if (!this.analyser || isMuted) return new Uint8Array(0);
+    if (!this.analyser || this._inputSilencedForVisuals()) return new Uint8Array(0);
     const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
     this.analyser.getByteFrequencyData(dataArray);
     return dataArray;

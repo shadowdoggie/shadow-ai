@@ -6,7 +6,7 @@
 
 Hands-free, real-time voice. Long-term memory. Web search. Background agents. Your Google account, optionally.
 
-[![Download](https://img.shields.io/github/v/release/shadowdoggie/shadow-ai?label=download&logo=windows&color=2ea043)](https://github.com/shadowdoggie/shadow-ai/releases/latest)
+[![Download](https://img.shields.io/badge/download-latest-2ea043?logo=windows&logoColor=white)](https://github.com/shadowdoggie/shadow-ai/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/shadowdoggie/shadow-ai/total?logo=github&color=blue)](https://github.com/shadowdoggie/shadow-ai/releases)
 [![Stars](https://img.shields.io/github/stars/shadowdoggie/shadow-ai?style=flat&logo=github&color=yellow)](https://github.com/shadowdoggie/shadow-ai/stargazers)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-orange.svg)](LICENSE)

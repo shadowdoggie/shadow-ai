@@ -23,6 +23,9 @@ for (let i = 0; i < 45; i++) {
 }
 
 function visualizerLoop() {
+  // Recover from a stuck "thinking" indicator while idle (no-op unless genuinely stuck).
+  if (typeof maybeRecoverIdleVisualizerState === 'function') maybeRecoverIdleVisualizerState();
+
   // Clear with slight trailing opacity for a gorgeous fluid blend
   ctx.fillStyle = 'rgba(10, 6, 5, 0.15)';
   ctx.fillRect(0, 0, canvas.width, canvas.height);

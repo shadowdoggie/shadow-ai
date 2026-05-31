@@ -957,7 +957,10 @@ function queueSchedulerMessage(text, options = {}) {
     speechSeq: userSpeechSeq,
     ttlMs,
     dedupeTtlMs,
-    source: options.source || lane
+    source: options.source || lane,
+    // Snapshot the spawn generation so a subagent status notice that gets superseded by a newer
+    // spawn before it is delivered can be recognized as stale and skipped (see delivery below).
+    spawnGen: typeof subagentSpawnGeneration === 'number' ? subagentSpawnGeneration : 0
   };
   notificationSeenKeys.set(dedupeKey, { at: now, ttlMs: dedupeTtlMs, id: item.id });
   pendingNotifications.push(item);
@@ -1117,6 +1120,17 @@ function tryDeliverPendingNotifications() {
   const item = normalizePendingNotification(pendingNotifications.splice(next.index, 1)[0]);
   const text = item.text;
   if (!text) return;
+  // Skip a stale subagent status notice: it was queued before a newer subagent spawned, so the task
+  // it reports on is no longer the one in flight. Voicing "the calculator is done" while a freshly
+  // spawned subagent is still building one makes the model conflate them and appear to lie. The
+  // completion already produced a transcript bubble + chime, so the user was still informed.
+  if (item.lane === 'subagent' && Number(item.spawnGen || 0) < (typeof subagentSpawnGeneration === 'number' ? subagentSpawnGeneration : 0)) {
+    console.log(`[Scheduler] Skipped stale subagent notice ${item.id} (spawn gen ${item.spawnGen} < current ${subagentSpawnGeneration}); a newer subagent has since spawned.`);
+    deliveredNotificationIds.add(item.id);
+    updateDiagnosticsPanel();
+    if (pendingNotifications.length > 0) schedulePendingNotificationRetry(NOTIFICATION_COOLDOWN_MS);
+    return;
+  }
   if (deliveredNotificationIds.has(item.id)) {
     console.debug('[Scheduler] Skipping already delivered notification id:', item.id);
     updateDiagnosticsPanel();

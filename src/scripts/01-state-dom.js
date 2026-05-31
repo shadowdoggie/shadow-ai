@@ -43,6 +43,21 @@ function getUserLabel() {
 }
 let voiceName = localStorage.getItem('shadow_voice') || 'Leda';
 let selectedMicDeviceId = localStorage.getItem('shadow_mic_device') || '';
+// Push-to-talk: when enabled, the mic only streams while the bound key is held. Held-detection is
+// global (works even when Shadow isn't the focused window) via a server-side GetAsyncKeyState poll
+// surfaced through /api/ptt/wait, with a browser keydown/keyup fallback when the window IS focused.
+// vk = the Windows virtual-key code (KeyboardEvent.keyCode), so F13-F24 from G HUB-mapped mouse
+// buttons bind cleanly. Default OFF on a fresh install.
+let pushToTalkEnabled = localStorage.getItem('shadow_ptt_enabled') === 'true';
+let pushToTalkVk = parseInt(localStorage.getItem('shadow_ptt_vk') || '0', 10) || 0;
+let pushToTalkKeyLabel = localStorage.getItem('shadow_ptt_key_label') || '';
+let pushToTalkActive = false;       // is the bound key currently held?
+let pttLastReleaseAt = 0;           // timestamp of the last release (for the brief anti-clip tail)
+const PTT_RELEASE_TAIL_MS = 160;    // keep the mic open this long after release so the last word isn't clipped
+// PTT only gates the mic once a key is actually bound — enabling it with no key set must never
+// silently mute the user forever.
+function pttIsArmed() { return !!(pushToTalkEnabled && pushToTalkVk > 0); }
+function pttIsOpen() { return pushToTalkActive || (Date.now() - pttLastReleaseAt) < PTT_RELEASE_TAIL_MS; }
 const DEFAULT_LIVE_MODEL = 'models/gemini-3.1-flash-live-preview';
 const FALLBACK_LIVE_MODEL = 'models/gemini-2.5-flash-native-audio-preview-12-2025';
 const SUPPORTED_LIVE_MODELS = new Set([
@@ -169,6 +184,10 @@ let smartMainRoutingToolInCurrentTurn = false;
 let smartMainBypassLoggedForTurn = false;
 let smartMainLastUserTranscript = '';
 let smartMainLastConsultStartedAt = 0;
+// True once a background subagent was actually started during the current voice turn. Used at
+// turnComplete to catch the Gemini hallucination where it TELLS the user it spawned background work
+// but never called spawn_background_agent — so we can force a correction instead of leaving a lie.
+let spawnedSubagentThisTurn = false;
 let subagentPromptRefinementInProgress = false;
 let subagentProvider = localStorage.getItem('shadow_subagent_provider') || 'gemini';
 let subagentModel = localStorage.getItem('shadow_subagent_model') || '';
@@ -180,7 +199,10 @@ if (subagentProvider === 'ollama_local') {
   localStorage.setItem('shadow_subagent_provider', 'gemini');
   localStorage.setItem('shadow_subagent_model', '');
 }
-let subagentReasoningMode = localStorage.getItem('shadow_subagent_reasoning_mode') || 'medium';
+// Default reasoning effort for GPT-5.5 / GPT-5.4 Codex subagents on a fresh install. 'high' by
+// default: 'medium' underperforms noticeably in practice. Only affects the Codex reasoning models;
+// ignored by other providers. Existing users keep whatever they previously saved.
+let subagentReasoningMode = localStorage.getItem('shadow_subagent_reasoning_mode') || 'high';
 let minimaxApiKey = localStorage.getItem('shadow_minimax_key') || '';
 let moonshotApiKey = localStorage.getItem('shadow_moonshot_key') || '';
 let customEndpoint = localStorage.getItem('shadow_custom_endpoint') || '';
@@ -429,6 +451,9 @@ const newDefault = 'You are a highly empathetic, warm, and insightful human comp
   '- If the user asks "are they still doing something?", "what is the subagent doing?", or "is it working?", you MUST use `get_active_subagents` to check status, then report it to the user.\n' +
   '- When `get_active_subagents` returns `active_count: 0`, no subagent is currently doing work. Recent/completed/failed/partial subagent history is historical only; NEVER say you are still researching, checking, working, or doing background work from that history.\n' +
   '- Do NOT claim what a subagent said, did, or is doing unless it appears in the latest subagent status/result/system notice. If you are unsure, say you are checking and call `get_active_subagents`.\n' +
+  '- NEVER tell the user you started, spawned, kicked off, or are "working on it in the background" UNLESS you actually called `spawn_background_agent` in THIS turn and it returned a success/spawned result. Do not narrate background work you did not start. If you intend to delegate, call the tool first and only then say you started it; otherwise just answer directly.\n' +
+  '- NEVER say a background task is done, finished, complete, ready, or "all set" UNLESS you have received a "[Subagent ... Done]" completion notice for it, OR `get_active_subagents` shows it is no longer active. Spawning is NOT finishing. If you have not seen a completion notice, assume it is STILL RUNNING: say it is still working (or call `get_active_subagents` to confirm) instead of claiming it finished.\n' +
+  '- NEVER invent or guess a subagent\'s progress, outcome, or FAILURE REASON. Do NOT say it "hit a context limit", "ran out of memory", "errored", "failed", "is still loading", or any other specific status unless a "[Subagent ...]" notice or `get_active_subagents` actually reported it. If the user asks before any result notice has arrived, say it is still working and you will tell them the moment it finishes — do not narrate a guessed status or error.\n' +
   '- If the user gives new directions or corrections for a running subagent (e.g. "tell it to make it dark mode"), you MUST call `steer_subagent` with the subagent\'s ID and their feedback. This interrupts the current step, preserves the subagent\'s existing context, and injects the correction.\n' +
   '- If the user says "stop", "cancel", "kill the subagent", "stop the current subagent", or "stop all subagents", you MUST call `get_active_subagents` if needed, then `cancel_subagent`. If there is only one active subagent, cancel that one. Do NOT spawn a replacement unless the same user utterance explicitly asks you to start a new one.\n' +
   '- IMPORTANT: The app has a deterministic subagent supervisor that watches for failed tools and stalled progress. Do not poll subagents on a timer yourself; use `get_active_subagents` when the user asks, when you need a current fact before acting, or when a system notice points you to a subagent issue.\n\n' +
@@ -684,6 +709,10 @@ async function fetchLocalApiWithTimeout(url, options = {}, timeoutMs = LOCAL_API
 let isAISpeaking = false;
 let pendingNotifications = []; // Scheduler notifications waiting for AI to finish speaking
 let notificationSequence = 0;
+// Increments on every subagent spawn. A subagent status notice (Done/Partial/Failed) queued under
+// an OLDER generation than the current one is stale: a newer subagent has since spawned, so voicing
+// the old "task is done" makes the model conflate it with the new in-flight task and appear to lie.
+let subagentSpawnGeneration = 0;
 const notificationSeenKeys = new Map();
 const deliveredNotificationIds = new Set();
 const notificationDeliveryHistory = [];
@@ -754,6 +783,9 @@ const inputAssistantName = document.getElementById('input-assistant-name');
 const inputUserName = document.getElementById('input-user-name');
 const selectVoice = document.getElementById('select-voice');
 const selectMicDevice = document.getElementById('select-mic-device');
+const inputPttEnabled = document.getElementById('input-ptt-enabled');
+const btnPttCapture = document.getElementById('btn-ptt-capture');
+const pttKeyLabel = document.getElementById('ptt-key-label');
 const btnFavoriteVoice = document.getElementById('btn-favorite-voice');
 const selectAccent = document.getElementById('select-accent');
 const selectModel = document.getElementById('select-model');

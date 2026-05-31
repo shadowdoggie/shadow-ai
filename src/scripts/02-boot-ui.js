@@ -185,15 +185,190 @@ function initOnboardingWizard() {
 }
 
 function goToOnboardingStep(n) {
+  // Tear down any live step-specific resources when leaving a step.
+  stopOnboardingMicMeter();
+  if (typeof stopOnboardingVoicePreview === 'function') stopOnboardingVoicePreview();
+
   onboardingCurrentStep = n;
   const steps = document.querySelectorAll('#onboarding-modal .onboarding-step');
   steps.forEach(s => s.classList.toggle('hidden', parseInt(s.dataset.step, 10) !== n));
   const dots = document.querySelectorAll('#onboarding-steps .onboarding-step-dot');
   dots.forEach(d => d.classList.toggle('active', parseInt(d.dataset.step, 10) <= n));
-  const isLast = n === 3;
+  const isLast = n === 4;
   if (btnOnboardBack) btnOnboardBack.classList.toggle('hidden', n === 1);
   if (btnOnboardNext) btnOnboardNext.classList.toggle('hidden', isLast);
   if (btnGetStarted) btnGetStarted.classList.toggle('hidden', !isLast);
+
+  if (n === 2) startOnboardingMicMeter();
+  else if (n === 3) startOnboardingVoiceCarousel();
+  updateOnboardingNavGate();
+}
+
+// ===== Onboarding step gating: the mic must work, and the subagent must test OK, before proceeding =====
+let onboardingMicVerified = false;
+let onboardingSubagentTested = false;
+
+function onboardingSubagentReady() {
+  const prov = onboardingSubagentProvider ? onboardingSubagentProvider.value : 'gemini';
+  if (prov === 'gemini') return true; // Gemini key is already validated by the live voice step
+  return !!onboardingSubagentTested;
+}
+
+function updateOnboardingNavGate() {
+  if (btnOnboardNext) btnOnboardNext.disabled = (onboardingCurrentStep === 2 && !onboardingMicVerified);
+  if (btnGetStarted) btnGetStarted.disabled = (onboardingCurrentStep === 4 && !onboardingSubagentReady());
+}
+
+// ===== Onboarding mic check: live level meter + verify-on-input =====
+let _obMicCtx = null, _obMicStream = null, _obMicSource = null, _obMicAnalyser = null, _obMicRaf = null;
+
+async function startOnboardingMicMeter() {
+  stopOnboardingMicMeter();
+  onboardingMicVerified = false;
+  updateOnboardingNavGate();
+  const meterFill = document.getElementById('onboarding-mic-meter-fill');
+  const statusEl = document.getElementById('onboarding-mic-status');
+  const micSel = document.getElementById('onboarding-mic-device');
+  if (statusEl) { statusEl.textContent = 'Say something to test your mic…'; statusEl.classList.remove('ok'); }
+
+  // Reuse the Settings mic enumeration (primed so real device names show), then mirror it here.
+  try { if (typeof window.populateMicDevices === 'function') await window.populateMicDevices(true); } catch (e) {}
+  if (micSel && typeof selectMicDevice !== 'undefined' && selectMicDevice) {
+    micSel.innerHTML = selectMicDevice.innerHTML;
+    micSel.value = (typeof selectedMicDeviceId === 'string') ? selectedMicDeviceId : '';
+  }
+
+  const wantId = (micSel && micSel.value) ? micSel.value : '';
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: wantId ? { deviceId: { exact: wantId } } : true });
+  } catch (e) {
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e2) {
+      if (statusEl) statusEl.textContent = 'No mic detected or access denied — you can still continue.';
+      onboardingMicVerified = true; // never hard-block onboarding on the mic check
+      updateOnboardingNavGate();
+      return;
+    }
+  }
+  _obMicStream = stream;
+  _obMicCtx = new (window.AudioContext || window.webkitAudioContext)();
+  _obMicSource = _obMicCtx.createMediaStreamSource(stream);
+  _obMicAnalyser = _obMicCtx.createAnalyser();
+  _obMicAnalyser.fftSize = 256;
+  _obMicSource.connect(_obMicAnalyser);
+  const data = new Uint8Array(_obMicAnalyser.frequencyBinCount);
+  const loop = () => {
+    if (!_obMicAnalyser) return;
+    _obMicAnalyser.getByteFrequencyData(data);
+    let sum = 0; for (let i = 0; i < data.length; i++) sum += data[i];
+    const level = sum / data.length / 255;
+    if (meterFill) meterFill.style.width = Math.min(100, Math.round(level * 260)) + '%';
+    if (level > 0.045 && !onboardingMicVerified) {
+      onboardingMicVerified = true;
+      if (statusEl) { statusEl.textContent = 'Mic is working ✓'; statusEl.classList.add('ok'); }
+      updateOnboardingNavGate();
+    }
+    _obMicRaf = requestAnimationFrame(loop);
+  };
+  loop();
+}
+
+function stopOnboardingMicMeter() {
+  if (_obMicRaf) cancelAnimationFrame(_obMicRaf);
+  _obMicRaf = null;
+  try { if (_obMicSource) _obMicSource.disconnect(); } catch (e) {}
+  try { if (_obMicStream) _obMicStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+  try { if (_obMicCtx) _obMicCtx.close(); } catch (e) {}
+  _obMicSource = null; _obMicStream = null; _obMicAnalyser = null; _obMicCtx = null;
+}
+
+// ===== Onboarding "meet your voice" carousel (live preview via 14-onboarding-voice.js) =====
+function getOnboardingVoiceIndex() {
+  const cur = (onboardingVoice && onboardingVoice.value) || voiceName || 'Leda';
+  let idx = GEMINI_VOICE_OPTIONS.findIndex(v => v.name === cur);
+  if (idx < 0) idx = GEMINI_VOICE_OPTIONS.findIndex(v => v.name === 'Leda');
+  return idx < 0 ? 0 : idx;
+}
+
+function renderOnboardingVoiceLabel() {
+  const v = GEMINI_VOICE_OPTIONS[getOnboardingVoiceIndex()] || { name: 'Leda', style: '' };
+  const nameEl = document.getElementById('onboarding-voice-name');
+  const styleEl = document.getElementById('onboarding-voice-style');
+  if (nameEl) nameEl.textContent = v.name;
+  if (styleEl) styleEl.textContent = v.style || '';
+}
+
+function setOnboardingOrbState(state) {
+  const orb = document.getElementById('onboarding-voice-orb');
+  const hint = document.getElementById('onboarding-voice-hint');
+  if (orb) {
+    orb.classList.remove('state-connecting', 'state-listening', 'state-speaking', 'state-error');
+    orb.classList.add('state-' + state);
+  }
+  if (hint) {
+    hint.textContent = state === 'connecting' ? 'Connecting…'
+      : state === 'listening' ? 'Say hi — talk to it 👋'
+      : state === 'speaking' ? 'Speaking…'
+      : state === 'error' ? "Couldn't reach the voice — you can still continue."
+      : '';
+  }
+}
+
+function startOnboardingVoiceCarousel() {
+  renderOnboardingVoiceLabel();
+  setOnboardingOrbState('connecting');
+  if (typeof startOnboardingVoicePreview !== 'function') return;
+  startOnboardingVoicePreview({
+    voice: (onboardingVoice && onboardingVoice.value) || voiceName || 'Leda',
+    name: (onboardingAssistantName && onboardingAssistantName.value.trim()) || (typeof getAssistantName === 'function' ? getAssistantName() : 'Shadow'),
+    accent: (onboardingAccent && onboardingAccent.value) || accent || 'neutral',
+    micDeviceId: (typeof selectedMicDeviceId === 'string') ? selectedMicDeviceId : '',
+    onState: setOnboardingOrbState
+  });
+}
+
+function cycleOnboardingVoice(dir) {
+  let idx = getOnboardingVoiceIndex();
+  idx = (idx + dir + GEMINI_VOICE_OPTIONS.length) % GEMINI_VOICE_OPTIONS.length;
+  const v = GEMINI_VOICE_OPTIONS[idx];
+  if (onboardingVoice) onboardingVoice.value = v.name;
+  renderOnboardingVoiceLabel();
+  setOnboardingOrbState('connecting');
+  if (typeof switchOnboardingVoice === 'function') switchOnboardingVoice(v.name);
+}
+
+// ===== Onboarding forced subagent connection test =====
+async function runOnboardingSubagentTest() {
+  const statusEl = document.getElementById('onboarding-subagent-test-status');
+  const btn = document.getElementById('btn-onboarding-test-subagent');
+  const prov = onboardingSubagentProvider ? onboardingSubagentProvider.value : 'gemini';
+  if (statusEl) { statusEl.textContent = 'Testing…'; statusEl.classList.remove('ok'); }
+  if (btn) btn.disabled = true;
+  try {
+    // Apply the current onboarding subagent selection so the test exercises exactly what will be saved.
+    if (typeof applyOnboardingSubagentChoice === 'function') await applyOnboardingSubagentChoice();
+    if (prov === 'gemini') {
+      onboardingSubagentTested = true;
+      if (statusEl) { statusEl.textContent = 'Gemini subagents ready ✓'; statusEl.classList.add('ok'); }
+    } else if (typeof runSubagentPromptRefinement === 'function') {
+      const result = await runSubagentPromptRefinement({ kind: 'spawn', text: 'Connectivity check — reply with the single word OK.' });
+      const ok = result && typeof result.text === 'string' && result.text.trim();
+      onboardingSubagentTested = !!ok;
+      if (statusEl) {
+        if (ok) { statusEl.textContent = 'Connected ✓'; statusEl.classList.add('ok'); }
+        else { statusEl.textContent = 'No response from the model — check the key/model and retry.'; statusEl.classList.remove('ok'); }
+      }
+    } else {
+      onboardingSubagentTested = true; // can't test in this build; don't block
+      if (statusEl) statusEl.textContent = 'Ready.';
+    }
+  } catch (e) {
+    onboardingSubagentTested = false;
+    if (statusEl) { statusEl.textContent = `Failed: ${(e && e.message) ? e.message : e}`; statusEl.classList.remove('ok'); }
+  } finally {
+    if (btn) btn.disabled = false;
+    updateOnboardingNavGate();
+  }
 }
 
 // Show/hide the endpoint, key, Codex login, and model controls for the selected provider,
@@ -240,9 +415,15 @@ function updateOnboardingSubagentUI() {
   setOnboardingModelStatus('', false);
   if (onboardingSubagentInfo) onboardingSubagentInfo.textContent = cfg.info || '';
 
-  // Auto-detect models for local providers when an endpoint is already filled in.
+  // Auto-detect models for local providers when an endpoint is already filled in — but only for a
+  // localhost endpoint or when a key is present. Auto-pinging a remote keyed endpoint (e.g.
+  // api.openai.com) with no key just 502s and spams the console; the user can still click "Detect
+  // models" manually, which surfaces a clean status message instead of a raw network error.
   if (isLocal && onboardingSubagentEndpoint && onboardingSubagentEndpoint.value.trim()) {
-    onboardingDetectModels();
+    const ep = onboardingSubagentEndpoint.value.trim();
+    const isLocalhostEndpoint = /(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(ep);
+    const hasKey = !!(onboardingSubagentKey && onboardingSubagentKey.value.trim());
+    if (isLocalhostEndpoint || hasKey) onboardingDetectModels();
   }
 }
 
@@ -435,6 +616,59 @@ function showCredentialPrompt(credentialKey, reason = '') {
   credentialModal.dataset.subagentProvider = config.subagentProvider || '';
   credentialModal.classList.remove('hidden');
   return true;
+}
+
+// Voice preview: synthesize a short sample in the selected Gemini voice and play it, so users can
+// HEAR a voice instead of guessing from its one-word style label. Uses Gemini's TTS model (its
+// prebuilt voice names match our list) and the existing 24kHz AudioPlayer. Triggered by a click (a
+// user gesture), so the browser allows the AudioContext to start.
+let _voicePreviewPlayer = null;
+let _voicePreviewInFlight = false;
+async function previewVoice(voice, btn, sampleName) {
+  if (_voicePreviewInFlight) return;
+  let key = (typeof apiKey === 'string' && apiKey.trim()) ? apiKey.trim() : '';
+  if (!key && typeof onboardingApiKey !== 'undefined' && onboardingApiKey && onboardingApiKey.value) {
+    key = onboardingApiKey.value.trim();
+  }
+  if (!key) { addSystemMessage('Add your Gemini API key first to preview a voice.'); return; }
+  const voiceName = String(voice || 'Leda');
+  // Use the name the user is CURRENTLY typing (onboarding/Settings field) so the preview reflects it
+  // immediately — not the last saved name. Falls back to the saved assistant name.
+  const rawName = (typeof sampleName === 'string' && sampleName.trim())
+    ? sampleName.trim()
+    : (typeof getAssistantName === 'function' ? getAssistantName() : 'Shadow');
+  const assistantLabel = (typeof normalizeAssistantName === 'function') ? normalizeAssistantName(rawName) : rawName;
+  _voicePreviewInFlight = true;
+  if (btn) { btn.disabled = true; btn.classList.add('previewing'); }
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${encodeURIComponent(key)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: `Hi, I'm ${assistantLabel}.` }] }],
+        generationConfig: {
+          responseModalities: ['AUDIO'],
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceName } } }
+        }
+      })
+    });
+    const json = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
+    if (!res.ok) throw new Error((json && json.error && json.error.message) || `HTTP ${res.status}`);
+    const part = json && json.candidates && json.candidates[0] && json.candidates[0].content
+      && json.candidates[0].content.parts && json.candidates[0].content.parts[0];
+    const b64 = part && part.inlineData && part.inlineData.data;
+    if (!b64) throw new Error('No audio was returned for this voice.');
+    // Gemini TTS returns 24kHz 16-bit PCM — exactly what AudioPlayer expects.
+    if (!_voicePreviewPlayer) _voicePreviewPlayer = new AudioPlayer(24000);
+    _voicePreviewPlayer.stop();
+    _voicePreviewPlayer.reset();
+    _voicePreviewPlayer.playChunk(b64);
+  } catch (err) {
+    addSystemMessage(`Voice preview failed: ${err && err.message ? err.message : err}`);
+  } finally {
+    _voicePreviewInFlight = false;
+    if (btn) { btn.disabled = false; btn.classList.remove('previewing'); }
+  }
 }
 
 // --- Initialization & UI Binding ---
@@ -811,10 +1045,163 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
   populateMicDevices();
 
+  // ---- Push-to-talk wiring ----
+  // Human-readable label for a KeyboardEvent at bind time (the Settings window is focused, so the
+  // browser delivers keydown even for F13-F24 mapped from a mouse button).
+  function pttLabelFromEvent(e) {
+    const code = e.code || '';
+    if (/^F\d{1,2}$/.test(code)) return code;                  // F1..F24
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3);         // KeyA -> A
+    if (/^Digit\d$/.test(code)) return code.slice(5);          // Digit5 -> 5
+    if (/^Numpad/.test(code)) return code.replace('Numpad', 'Num ');
+    const named = {
+      Space: 'Space', Enter: 'Enter', Tab: 'Tab', Backquote: '`',
+      ControlLeft: 'Left Ctrl', ControlRight: 'Right Ctrl',
+      AltLeft: 'Left Alt', AltRight: 'Right Alt',
+      ShiftLeft: 'Left Shift', ShiftRight: 'Right Shift'
+    };
+    if (named[code]) return named[code];
+    if (e.key && e.key.length === 1) return e.key.toUpperCase();
+    return code || ('Key ' + (e.keyCode || 0));
+  }
+
+  function renderPttBinding() {
+    if (inputPttEnabled) inputPttEnabled.checked = !!pushToTalkEnabled;
+    if (pttKeyLabel) {
+      if (pushToTalkEnabled && !pushToTalkVk) {
+        pttKeyLabel.textContent = 'No key set — click “Set key”';
+      } else if (pushToTalkVk) {
+        pttKeyLabel.textContent = 'Bound to: ' + (pushToTalkKeyLabel || ('Key ' + pushToTalkVk));
+      } else {
+        pttKeyLabel.textContent = 'No key set';
+      }
+    }
+  }
+
+  // Tell the server which key to watch globally (and whether PTT is on). Safe to call often.
+  async function applyPttConfigToServer() {
+    try {
+      const res = await fetchLocalApiWithTimeout('/api/ptt/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: pttIsArmed(), vk: pushToTalkVk || 0 })
+      }, LOCAL_API_TIMEOUT_MS);
+      const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
+      return !!(data && data.supported);
+    } catch (e) { return false; }
+  }
+
+  function persistPttSettings() {
+    try {
+      localStorage.setItem('shadow_ptt_enabled', pushToTalkEnabled ? 'true' : 'false');
+      localStorage.setItem('shadow_ptt_vk', String(pushToTalkVk || 0));
+      localStorage.setItem('shadow_ptt_key_label', pushToTalkKeyLabel || '');
+    } catch (e) {}
+    if (typeof saveConfigToServer === 'function') saveConfigToServer();
+  }
+
+  // Single place that flips the held state (used by both the global poll and the focused fallback).
+  function setPttHeld(held) {
+    if (held === pushToTalkActive) return;
+    pushToTalkActive = held;
+    if (!held) pttLastReleaseAt = Date.now();
+  }
+
+  // Global long-poll: learn of press/release edges from the server's key poll with ~15-30ms latency,
+  // even when Shadow isn't the focused window.
+  let pttWaitRunning = false;
+  let pttWaitAbort = null;
+  async function pttWaitLoop() {
+    if (pttWaitRunning) return;
+    pttWaitRunning = true;
+    let since = -1;
+    try {
+      const sres = await fetchLocalApiWithTimeout('/api/ptt/state', {}, LOCAL_API_TIMEOUT_MS);
+      const s = await readBootResponseJsonWithTimeout(sres, LOCAL_API_TIMEOUT_MS);
+      if (s && s.status === 'success') { since = s.seq; setPttHeld(!!s.held); }
+    } catch (e) {}
+    while (pttWaitRunning && pttIsArmed()) {
+      try {
+        pttWaitAbort = new AbortController();
+        // The wait endpoint blocks up to ~25s (heartbeat), so the fetch timeout must exceed that.
+        const wres = await fetchLocalApiWithTimeout('/api/ptt/wait?since=' + since, { signal: pttWaitAbort.signal }, 30000);
+        const d = await readBootResponseJsonWithTimeout(wres, LOCAL_API_TIMEOUT_MS);
+        if (d && d.status === 'success') { since = d.seq; setPttHeld(!!d.held); }
+      } catch (e) {
+        if (!pttIsArmed()) break;
+        await new Promise(res => setTimeout(res, 600));   // brief backoff on a network hiccup
+      }
+    }
+    pttWaitRunning = false;
+  }
+  function stopPttWaitLoop() {
+    pttWaitRunning = false;
+    if (pttWaitAbort) { try { pttWaitAbort.abort(); } catch (e) {} }
+  }
+
+  // Apply the current PTT settings everywhere: UI, server arm, and the edge long-poll. Exposed so
+  // loadConfigFromServer() can re-apply after restoring settings from config.json on boot.
+  function onPttSettingsChanged() {
+    renderPttBinding();
+    applyPttConfigToServer();
+    if (pttIsArmed()) pttWaitLoop();
+    else { stopPttWaitLoop(); setPttHeld(false); }
+  }
+  window.onPttSettingsChanged = onPttSettingsChanged;
+
+  if (inputPttEnabled) {
+    inputPttEnabled.addEventListener('change', function () {
+      pushToTalkEnabled = inputPttEnabled.checked;
+      persistPttSettings();
+      onPttSettingsChanged();
+    });
+  }
+
+  // "Set key": capture the next key the user presses. keyCode is the Windows virtual-key the server
+  // poll watches. Esc cancels.
+  let pttCapturing = false;
+  if (btnPttCapture) {
+    btnPttCapture.addEventListener('click', function () {
+      if (pttCapturing) return;
+      pttCapturing = true;
+      const prevText = btnPttCapture.textContent;
+      btnPttCapture.textContent = 'Press a key…';
+      if (pttKeyLabel) pttKeyLabel.textContent = 'Listening — press any key (Esc to cancel)';
+      const onKey = function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.removeEventListener('keydown', onKey, true);
+        pttCapturing = false;
+        btnPttCapture.textContent = prevText;
+        if (e.keyCode === 27) { renderPttBinding(); return; }   // Esc cancels
+        pushToTalkVk = e.keyCode || 0;
+        pushToTalkKeyLabel = pttLabelFromEvent(e);
+        persistPttSettings();
+        onPttSettingsChanged();
+      };
+      window.addEventListener('keydown', onKey, true);
+    });
+  }
+
+  // Focused-window fallback: drives PTT whenever Shadow has focus, so it still works if the global
+  // poll is ever unavailable (Add-Type blocked). Harmless to run alongside the global poll.
+  window.addEventListener('keydown', function (e) {
+    if (pttCapturing || !pttIsArmed()) return;
+    if (e.keyCode === pushToTalkVk && !e.repeat) setPttHeld(true);
+  });
+  window.addEventListener('keyup', function (e) {
+    if (!pttIsArmed()) return;
+    if (e.keyCode === pushToTalkVk) setPttHeld(false);
+  });
+
+  // Arm the server with the saved binding on boot so PTT works on the very first call.
+  onPttSettingsChanged();
+
   // Setup Event Listeners
   btnSettings.addEventListener('click', () => {
     inputApiKey.value = apiKey;
     populateMicDevices(true);
+    renderPttBinding();
     if (updateCheckStatus) updateCheckStatus.textContent = '';
     if (inputUserName) inputUserName.value = getUserName();
     selectVoice.value = voiceName;
@@ -886,6 +1273,15 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   if (selectVoice) {
     selectVoice.addEventListener('change', syncFavoriteVoiceButton);
+  }
+
+  const btnPreviewVoice = document.getElementById('btn-preview-voice');
+  if (btnPreviewVoice && selectVoice) {
+    btnPreviewVoice.addEventListener('click', () => previewVoice(selectVoice.value, btnPreviewVoice, inputAssistantName ? inputAssistantName.value : ''));
+  }
+  const btnOnboardingPreviewVoice = document.getElementById('btn-onboarding-preview-voice');
+  if (btnOnboardingPreviewVoice && onboardingVoice) {
+    btnOnboardingPreviewVoice.addEventListener('click', () => previewVoice(onboardingVoice.value, btnOnboardingPreviewVoice, onboardingAssistantName ? onboardingAssistantName.value : ''));
   }
 
   if (btnFavoriteVoice) {
@@ -1033,6 +1429,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       if (assistantNameChanged) {
         clearLiveSessionResumptionToken();
         if (isGraphOpen && updateGraphVisualization) updateGraphVisualization();
+        if (typeof refreshIdleAssistantName === 'function') refreshIdleAssistantName();
       }
 
       saveConfigToServer().then(saved => {
@@ -1078,7 +1475,7 @@ window.addEventListener('DOMContentLoaded', async () => {
           return;
         }
       }
-      goToOnboardingStep(Math.min(onboardingCurrentStep + 1, 3));
+      goToOnboardingStep(Math.min(onboardingCurrentStep + 1, 4));
     });
   }
   if (btnOnboardBack) {
@@ -1086,8 +1483,42 @@ window.addEventListener('DOMContentLoaded', async () => {
       goToOnboardingStep(Math.max(onboardingCurrentStep - 1, 1));
     });
   }
+
+  // Mic-check device picker: switching device restarts the live meter on the new device.
+  const onboardingMicDevice = document.getElementById('onboarding-mic-device');
+  if (onboardingMicDevice) {
+    onboardingMicDevice.addEventListener('change', () => {
+      selectedMicDeviceId = onboardingMicDevice.value || '';
+      try { localStorage.setItem('shadow_mic_device', selectedMicDeviceId); } catch (e) {}
+      if (onboardingCurrentStep === 2) startOnboardingMicMeter();
+    });
+  }
+
+  // Voice carousel: arrows cycle voices live; name/accent changes re-greet in the new voice.
+  const btnVoicePrev = document.getElementById('btn-voice-prev');
+  const btnVoiceNext = document.getElementById('btn-voice-next');
+  if (btnVoicePrev) btnVoicePrev.addEventListener('click', () => cycleOnboardingVoice(-1));
+  if (btnVoiceNext) btnVoiceNext.addEventListener('click', () => cycleOnboardingVoice(1));
+  if (onboardingAssistantName) {
+    onboardingAssistantName.addEventListener('change', () => { if (onboardingCurrentStep === 3) startOnboardingVoiceCarousel(); });
+  }
+  if (onboardingAccent) {
+    onboardingAccent.addEventListener('change', () => { if (onboardingCurrentStep === 3) startOnboardingVoiceCarousel(); });
+  }
+
+  // Forced subagent connection test.
+  const btnTestSubagent = document.getElementById('btn-onboarding-test-subagent');
+  if (btnTestSubagent) btnTestSubagent.addEventListener('click', runOnboardingSubagentTest);
+
   if (onboardingSubagentProvider) {
-    onboardingSubagentProvider.addEventListener('change', updateOnboardingSubagentUI);
+    onboardingSubagentProvider.addEventListener('change', () => {
+      updateOnboardingSubagentUI();
+      // A new provider needs its own test before finishing.
+      onboardingSubagentTested = false;
+      const st = document.getElementById('onboarding-subagent-test-status');
+      if (st) { st.textContent = ''; st.classList.remove('ok'); }
+      updateOnboardingNavGate();
+    });
   }
   if (btnOnboardingDetectModels) {
     btnOnboardingDetectModels.addEventListener('click', onboardingDetectModels);
@@ -1103,6 +1534,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   btnGetStarted.addEventListener('click', async () => {
+    // Always tear down the live voice preview + mic meter before finishing (no lingering socket/mic).
+    if (typeof stopOnboardingVoicePreview === 'function') stopOnboardingVoicePreview();
+    stopOnboardingMicMeter();
     const key = (onboardingApiKey.value || '').trim();
     if (!key) {
       goToOnboardingStep(1);
@@ -1145,6 +1579,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       await saveConfigToServer();
 
       onboardingModal.classList.add('hidden');
+      if (typeof refreshIdleAssistantName === 'function') refreshIdleAssistantName();
       addSystemMessage(`Welcome${userName ? `, ${userName}` : ''}! Setup complete. Subagents will use ${subagentProvider}${subagentModel ? ` / ${subagentModel}` : ''}.`);
     } catch (err) {
       console.error('Onboarding finish failed:', err);
@@ -1700,6 +2135,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   initWakeWordListener();
+
+  // Show the idle status line with the user's chosen assistant name from the very first frame
+  // (the static HTML says "Shadow"; this swaps in the real name once it's loaded).
+  if (typeof refreshIdleAssistantName === 'function') refreshIdleAssistantName();
 
   // Start Scheduler Poller
   startSchedulerPoller();

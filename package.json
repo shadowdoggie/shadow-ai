@@ -1,6 +1,6 @@
 {
   "name": "shadow-ai",
-  "version": "1.7.3",
+  "version": "1.8.0",
   "description": "A Windows voice-first AI companion — real-time voice conversation, long-term memory, web search, and background subagents.",
   "main": "scheduler.js",
   "os": [

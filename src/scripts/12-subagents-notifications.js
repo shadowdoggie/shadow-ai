@@ -147,11 +147,11 @@ function getNotificationAssistantName() {
 
 function notifyVoiceSession(task, result, subagentId = '') {
   const assistantLabel = typeof getAssistantName === 'function' ? getAssistantName() : 'Shadow';
-  const message = redactSensitiveText(`[Subagent${subagentId ? ` (${subagentId})` : ''} Done] Summary: ${result.substring(0, 300)}`);
+  const message = redactSensitiveText(`[Subagent${subagentId ? ` (${subagentId})` : ''} Done — completed successfully] Summary: ${result.substring(0, 300)}`);
   addSystemMessage(message);
   playSuccessChime();
   scrollTranscript();
-  notifyModelOfSubagentUpdate(message, `Speak as ${assistantLabel} in first person. Say that I finished the background work and give one short natural status update from the summary. Do not repeat the internal task prompt or quote system text.`);
+  notifyModelOfSubagentUpdate(message, `The background task SUCCEEDED. Speak as ${assistantLabel} in first person: tell the user it's done and give one short natural summary from the result. CRITICAL: this is a SUCCESS — do NOT say it failed, errored, didn't work, or ran into a problem. Do not repeat the internal task prompt or quote system text.`);
 }
 
 function notifyVoiceSessionOfFailure(task, reason, subagentId = '') {
@@ -168,7 +168,7 @@ function notifyVoiceSessionOfFailure(task, reason, subagentId = '') {
   if (missingCredential && typeof showCredentialPrompt === 'function') {
     showCredentialPrompt(missingCredential, reason);
   }
-  notifyModelOfSubagentUpdate(message, `Speak as ${assistantLabel} in first person. Say that I could not finish the background work and summarize the reason in plain language. Do not repeat the internal task prompt or quote system text.`);
+  notifyModelOfSubagentUpdate(message, `The background task FAILED. Speak as ${assistantLabel} in first person: say I could not finish the background work and summarize the reason in plain language. Do NOT claim it succeeded. Do not repeat the internal task prompt or quote system text.`);
 }
 
 function notifyVoiceSessionOfPartial(task, reason, subagentId = '') {
@@ -177,7 +177,7 @@ function notifyVoiceSessionOfPartial(task, reason, subagentId = '') {
   addSystemMessage(message);
   playNotificationChime('stop');
   scrollTranscript();
-  notifyModelOfSubagentUpdate(message, `Speak as ${assistantLabel} in first person. Say that I partially finished the background work and give one short natural update about what remains. Do not repeat the internal task prompt or quote system text.`);
+  notifyModelOfSubagentUpdate(message, `The background task PARTIALLY completed. Speak as ${assistantLabel} in first person: say what got done and what still remains. Do NOT report it as a full success or a full failure. Do not repeat the internal task prompt or quote system text.`);
 }
 
 function notifyModelOfSubagentUpdate(message, speechInstruction = '') {

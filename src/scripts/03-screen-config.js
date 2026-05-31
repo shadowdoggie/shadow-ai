@@ -208,6 +208,7 @@ async function loadConfigFromServer() {
       assistantName = normalizeAssistantName(config.shadow_assistant_name);
       localStorage.setItem('shadow_assistant_name', assistantName);
       if (inputAssistantName) inputAssistantName.value = assistantName;
+      if (typeof refreshIdleAssistantName === 'function') refreshIdleAssistantName();
     }
     if (config.shadow_user_name !== undefined) {
       userName = normalizeUserName(config.shadow_user_name);
@@ -369,6 +370,26 @@ async function loadConfigFromServer() {
     if (config.shadow_is_whispering !== undefined) {
       localStorage.setItem('shadow_is_whispering', (config.shadow_is_whispering === true || config.shadow_is_whispering === 'true') ? 'true' : 'false');
     }
+    let pttRestored = false;
+    if (config.shadow_ptt_enabled !== undefined) {
+      pushToTalkEnabled = (config.shadow_ptt_enabled === true || config.shadow_ptt_enabled === 'true');
+      localStorage.setItem('shadow_ptt_enabled', pushToTalkEnabled ? 'true' : 'false');
+      pttRestored = true;
+    }
+    if (config.shadow_ptt_vk !== undefined) {
+      pushToTalkVk = parseInt(config.shadow_ptt_vk, 10) || 0;
+      localStorage.setItem('shadow_ptt_vk', String(pushToTalkVk));
+      pttRestored = true;
+    }
+    if (config.shadow_ptt_key_label !== undefined) {
+      pushToTalkKeyLabel = config.shadow_ptt_key_label || '';
+      localStorage.setItem('shadow_ptt_key_label', pushToTalkKeyLabel);
+      pttRestored = true;
+    }
+    // Re-apply to the UI, arm the server-side key poll, and (re)start the edge long-poll.
+    if (pttRestored && typeof window.onPttSettingsChanged === 'function') {
+      window.onPttSettingsChanged();
+    }
 
     // Re-run provider UI visibility after restoring settings
     selectSubagentProvider.dispatchEvent(new Event('change'));
@@ -430,6 +451,9 @@ async function saveConfigToServer(options = {}) {
       shadow_searxng_port: searxngSearchPort,
       shadow_auto_update_check: autoUpdateCheckEnabled,
       shadow_mic_device: (typeof selectedMicDeviceId === 'string') ? selectedMicDeviceId : '',
+      shadow_ptt_enabled: !!pushToTalkEnabled,
+      shadow_ptt_vk: pushToTalkVk || 0,
+      shadow_ptt_key_label: pushToTalkKeyLabel || '',
       shadow_is_whispering: localStorage.getItem('shadow_is_whispering') === 'true',
       shadow_config_saved_at: Date.now()
     };

@@ -139,7 +139,7 @@
             <input type="text" class="masked-input" id="input-api-key" placeholder="AIzaSy..." autocomplete="off">
             <button id="btn-toggle-key-visibility" class="text-button" type="button">Show</button>
           </div>
-          <span class="field-hint">You can get an API key from the <a href="https://aistudio.google.com/" target="_blank">Google AI Studio</a>.</span>
+          <span class="field-hint">You can get an API key from <a href="https://aistudio.google.com/api-keys" target="_blank">Google AI Studio</a>.</span>
         </div>
 
         <!-- Microphone -->
@@ -149,6 +149,20 @@
             <option value="">Default microphone</option>
           </select>
           <span class="field-hint" style="display:block;margin-top:4px;">Which mic Shadow listens through. If names show as "Microphone 1/2", connect once to grant mic access, then reopen Settings.</span>
+        </div>
+
+        <!-- Push to Talk -->
+        <div class="form-group">
+          <label>Push to Talk</label>
+          <label class="checkbox-row" for="input-ptt-enabled">
+            <input type="checkbox" id="input-ptt-enabled">
+            <span>Only listen while I hold a key</span>
+          </label>
+          <span class="field-hint" style="display:block;margin-top:4px;">Works even when another window is focused &mdash; ideal for a mouse button mapped to F13&ndash;F15 in G&nbsp;HUB or similar mouse software.</span>
+          <div style="display:flex; align-items:center; gap:10px; margin-top:10px;">
+            <button id="btn-ptt-capture" class="secondary-button" type="button">Set key</button>
+            <span id="ptt-key-label" class="field-hint" style="margin:0;">No key set</span>
+          </div>
         </div>
 
         <!-- Voice Selection -->
@@ -190,7 +204,11 @@
             <button id="btn-favorite-voice" class="favorite-voice-button" type="button" title="Pin voice to top" aria-label="Pin voice to top">
               <span aria-hidden="true">&#9734;</span>
             </button>
+            <button id="btn-preview-voice" class="voice-preview-button" type="button" title="Hear this voice" aria-label="Hear this voice">
+              <span aria-hidden="true">&#9654;</span>
+            </button>
           </div>
+          <span class="field-hint" style="display:block;margin-top:4px;">Tap &#9654; to hear the selected voice.</span>
         </div>
 
         <div class="form-group">
@@ -236,8 +254,8 @@
           <select id="select-live-thinking-level">
             <option value="minimal">Minimal (Fastest)</option>
             <option value="low">Low (Faster)</option>
-            <option value="medium" selected>Medium (Balanced)</option>
-            <option value="high">High (Smartest)</option>
+            <option value="medium">Medium (Balanced)</option>
+            <option value="high" selected>High (Smartest)</option>
             <option value="auto">Auto (Provider Default)</option>
           </select>
           <span class="field-hint" style="display:block;margin-top:4px;">Applies to Gemini 3.1 Flash Live. Minimal keeps voice responsive; use subagents for heavier planning and research.</span>
@@ -335,8 +353,8 @@
           <select id="select-subagent-reasoning-mode">
             <option value="none">None</option>
             <option value="low">Low</option>
-            <option value="medium" selected>Medium</option>
-            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="high" selected>High</option>
             <option value="xhigh">XHigh</option>
           </select>
           <span class="field-hint" style="display:block;margin-top:4px;">Only applies to GPT-5.5 and GPT-5.4 Codex subagents.</span>
@@ -578,6 +596,7 @@
         <span class="onboarding-step-dot active" data-step="1"></span>
         <span class="onboarding-step-dot" data-step="2"></span>
         <span class="onboarding-step-dot" data-step="3"></span>
+        <span class="onboarding-step-dot" data-step="4"></span>
       </div>
 
       <!-- STEP 1: Welcome + Gemini key -->
@@ -590,42 +609,64 @@
         <div class="form-group onboarding-key-group">
           <label for="onboarding-api-key">Enter your Gemini API key to begin:</label>
           <input type="text" class="masked-input" id="onboarding-api-key" placeholder="AIzaSy..." autocomplete="off">
-          <span class="field-hint">Stored locally on this PC, never uploaded elsewhere. Get one free at <a href="https://aistudio.google.com/" target="_blank">Google AI Studio</a>.</span>
+          <span class="field-hint">Stored locally on this PC, never uploaded elsewhere. Get one free at <a href="https://aistudio.google.com/api-keys" target="_blank">Google AI Studio</a>. This one key powers Shadow's voice, web search, and Google features.</span>
         </div>
       </div>
 
-      <!-- STEP 2: Personalize -->
+      <!-- STEP 2: Mic check -->
       <div class="onboarding-step hidden" data-step="2">
-        <h2 class="onboarding-title">Make it yours</h2>
-        <p class="onboarding-description">Set names and how Shadow sounds. You can change any of this later in Settings.</p>
+        <h2 class="onboarding-title">Check your mic</h2>
+        <p class="onboarding-description">Pick your microphone and say something &mdash; let's make sure Shadow can hear you.</p>
         <div class="form-group">
-          <label for="onboarding-user-name">Your name (optional)</label>
-          <input type="text" id="onboarding-user-name" placeholder="What should Shadow call you?" autocomplete="off">
+          <label for="onboarding-mic-device">Microphone</label>
+          <select id="onboarding-mic-device">
+            <option value="">Default microphone</option>
+          </select>
         </div>
+        <div class="mic-check-meter" aria-hidden="true">
+          <div class="mic-check-meter-fill" id="onboarding-mic-meter-fill"></div>
+        </div>
+        <p class="field-hint mic-check-status" id="onboarding-mic-status">Say something to test your mic&hellip;</p>
+      </div>
+
+      <!-- STEP 3: Meet your voice (live carousel) -->
+      <div class="onboarding-step hidden" data-step="3">
+        <h2 class="onboarding-title">Meet your voice</h2>
+        <p class="onboarding-description">Talk to it, and use the arrows to find the voice you love.</p>
+        <div class="voice-carousel">
+          <button id="btn-voice-prev" class="voice-carousel-arrow" type="button" aria-label="Previous voice">&#10094;</button>
+          <div class="voice-orb" id="onboarding-voice-orb">
+            <span class="voice-orb-ring"></span>
+            <span class="voice-orb-core"></span>
+          </div>
+          <button id="btn-voice-next" class="voice-carousel-arrow" type="button" aria-label="Next voice">&#10095;</button>
+        </div>
+        <div class="voice-carousel-label">
+          <span class="voice-carousel-name" id="onboarding-voice-name">Leda</span>
+          <span class="voice-carousel-style" id="onboarding-voice-style">Youthful</span>
+        </div>
+        <p class="field-hint voice-carousel-hint" id="onboarding-voice-hint">Connecting&hellip;</p>
+        <select id="onboarding-voice" class="hidden"></select>
         <div class="form-group">
           <label for="onboarding-assistant-name">Assistant name</label>
           <input type="text" id="onboarding-assistant-name" placeholder="Shadow" autocomplete="off">
         </div>
         <div class="form-group">
-          <label for="onboarding-voice">Voice</label>
-          <select id="onboarding-voice"></select>
+          <label for="onboarding-user-name">Your name (optional)</label>
+          <input type="text" id="onboarding-user-name" placeholder="What should it call you?" autocomplete="off">
         </div>
         <div class="form-group">
           <label for="onboarding-accent">Accent / speaking style</label>
           <select id="onboarding-accent"></select>
         </div>
-        <div class="form-group">
-          <label for="onboarding-thinking">Voice reasoning</label>
-          <select id="onboarding-thinking"></select>
-        </div>
       </div>
 
-      <!-- STEP 3: Background helpers (subagents) -->
-      <div class="onboarding-step hidden" data-step="3">
+      <!-- STEP 4: Background helpers (subagents) -->
+      <div class="onboarding-step hidden" data-step="4">
         <h2 class="onboarding-title">Background helpers</h2>
         <p class="onboarding-description">
           Shadow can spin up <strong>subagents</strong> for multi-step work in the background &mdash; research, coding, file tasks, and more.
-          By default they use your Gemini key, so there's nothing to set up. You can also point them at any OpenAI-compatible endpoint (a paid API or your own gateway) in Settings.
+          By default they run on your Gemini key (which also powers Shadow's voice, web search, and Google features) &mdash; so there's nothing to set up. Prefer a different model? Pick another provider below and its API key field appears right here.
         </p>
         <div class="form-group">
           <label for="onboarding-subagent-provider">Subagent provider</label>
@@ -667,6 +708,13 @@
         </div>
 
         <p class="field-hint" id="onboarding-subagent-info" style="margin-top:4px;"></p>
+
+        <!-- Forced subagent connection test: must pass before finishing so the user never lands in
+             a half-broken setup. Gemini default auto-passes (its key is validated by the voice step). -->
+        <div class="subagent-test-row" style="display:flex; align-items:center; gap:10px; margin-top:10px;">
+          <button id="btn-onboarding-test-subagent" class="secondary-button" type="button">Test connection</button>
+          <span id="onboarding-subagent-test-status" class="field-hint" style="margin:0;"></span>
+        </div>
       </div>
 
       <!-- Navigation -->
@@ -787,5 +835,6 @@
   <script src="scripts/11-subagents-runner.js?v=ctx-overflow-recovery-20260530"></script>
   <script src="scripts/12-subagents-notifications.js?v=cred-prompt-20260529"></script>
   <script src="scripts/13-google-workspace.js?v=upload-resilience-20260529"></script>
+  <script src="scripts/14-onboarding-voice.js?v=onboarding-voice-20260531"></script>
 </body>
 </html>
