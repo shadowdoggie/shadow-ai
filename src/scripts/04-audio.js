@@ -242,19 +242,61 @@ class AudioRecorder {
     this.analyser = null;
   }
 
+  // Acquire a mic stream for the device the user picked in Settings. Uses "exact" so Chrome actually
+  // honors the choice (with "ideal" it often silently falls back to the system default); if that exact
+  // device is unavailable (e.g. unplugged), retries without the constraint so audio still works on the
+  // default mic instead of failing outright.
+  async _getMicStream() {
+    const baseAudio = { echoCancellation: true, noiseSuppression: true, autoGainControl: false, channelCount: 1 };
+    const wantId = (typeof selectedMicDeviceId === 'string' && selectedMicDeviceId) ? selectedMicDeviceId : '';
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: wantId ? Object.assign({}, baseAudio, { deviceId: { exact: wantId } }) : baseAudio
+      });
+    } catch (err) {
+      if (wantId && (err && (err.name === 'OverconstrainedError' || err.name === 'NotFoundError'))) {
+        console.warn('Selected microphone unavailable; falling back to the default device.', err);
+        stream = await navigator.mediaDevices.getUserMedia({ audio: baseAudio });
+      } else {
+        throw err;
+      }
+    }
+    // A live grant exposes real device names — learn them so the Settings picker can show them later.
+    if (typeof window.cacheMicLabels === 'function') {
+      navigator.mediaDevices.enumerateDevices()
+        .then(function (devs) { window.cacheMicLabels(devs.filter(function (d) { return d.kind === 'audioinput'; })); })
+        .catch(function () {});
+    }
+    return stream;
+  }
+
+  // Hot-swap the input device mid-call: re-acquire the stream for the currently-selected mic and splice
+  // the new source node into the running audio graph, leaving the processor/analyser (and the live
+  // socket) untouched so the call continues seamlessly. No-op if not currently capturing.
+  async switchDevice() {
+    if (!this.audioContext || !this.processor || !this.analyser) return;
+    let newStream;
+    try {
+      newStream = await this._getMicStream();
+    } catch (err) {
+      console.warn('Could not switch microphone; keeping the current device.', err);
+      return;
+    }
+    const newSource = this.audioContext.createMediaStreamSource(newStream);
+    if (this.source) { try { this.source.disconnect(); } catch (e) {} }
+    if (this.mediaStream) { this.mediaStream.getTracks().forEach(function (t) { t.stop(); }); }
+    this.mediaStream = newStream;
+    this.source = newSource;
+    this.source.connect(this.analyser);
+    this.source.connect(this.processor);
+  }
+
   async start() {
     try {
       this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
-      // Request mic with echo suppression features
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: false,
-          channelCount: 1
-        }
-      });
+      this.mediaStream = await this._getMicStream();
 
       this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
 

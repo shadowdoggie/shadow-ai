@@ -252,14 +252,6 @@ async function loadConfigFromServer() {
       localStorage.setItem('shadow_smart_main_routing_enabled', smartMainRoutingEnabled ? 'true' : 'false');
       if (inputSmartMainRoutingEnabled) inputSmartMainRoutingEnabled.checked = smartMainRoutingEnabled;
     }
-    const echoGateVal = config.shadow_echo_gate;
-    if (echoGateVal) {
-      echoGateLevel = echoGateVal;
-      localStorage.setItem('shadow_echo_gate', echoGateLevel);
-      if (selectEchoGate) {
-        selectEchoGate.value = echoGateLevel;
-      }
-    }
     if (config.shadow_proactive_enabled !== undefined) {
       proactiveEnabled = config.shadow_proactive_enabled !== false && config.shadow_proactive_enabled !== 'false';
       localStorage.setItem('shadow_proactive_enabled', proactiveEnabled ? 'true' : 'false');
@@ -401,7 +393,6 @@ async function saveConfigToServer(options = {}) {
       shadow_model: selectedModel,
       shadow_live_thinking_level: liveThinkingLevel,
       shadow_smart_main_routing_enabled: smartMainRoutingEnabled,
-      shadow_echo_gate: echoGateLevel,
       shadow_proactive_enabled: proactiveEnabled,
       shadow_proactive_profile: proactiveProfile,
       shadow_memory_backup_enabled: memoryBackupEnabled,
@@ -627,7 +618,6 @@ function getCurrentShadowSettings() {
     model: selectedModel,
     live_thinking_level: liveThinkingLevel,
     smart_main_routing_enabled: smartMainRoutingEnabled,
-    echo_gate: echoGateLevel,
     proactive_enabled: proactiveEnabled,
     proactive_profile: proactiveProfile,
     subagent_provider: subagentProvider,
@@ -727,18 +717,6 @@ async function applyShadowSettingsUpdate(args = {}) {
       changed.push('main model');
     } else {
       warnings.push(`Unknown main model "${requestedModel}".`);
-    }
-  }
-
-  const nextEchoGate = valueOrCurrent(requestedArgs.echo_gate, echoGateLevel);
-  if (nextEchoGate !== echoGateLevel) {
-    if (ECHO_GATE_MULTIPLIERS[nextEchoGate] !== undefined) {
-      echoGateLevel = nextEchoGate;
-      localStorage.setItem('shadow_echo_gate', echoGateLevel);
-      if (selectEchoGate) selectEchoGate.value = echoGateLevel;
-      changed.push('echo gate');
-    } else {
-      warnings.push(`Unknown echo gate "${nextEchoGate}".`);
     }
   }
 

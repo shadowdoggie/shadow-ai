@@ -42,6 +42,7 @@ function getUserLabel() {
   return getUserName() || 'the user';
 }
 let voiceName = localStorage.getItem('shadow_voice') || 'Leda';
+let selectedMicDeviceId = localStorage.getItem('shadow_mic_device') || '';
 const DEFAULT_LIVE_MODEL = 'models/gemini-3.1-flash-live-preview';
 const FALLBACK_LIVE_MODEL = 'models/gemini-2.5-flash-native-audio-preview-12-2025';
 const SUPPORTED_LIVE_MODELS = new Set([
@@ -189,7 +190,6 @@ let ollamaApiKey = localStorage.getItem('shadow_ollama_key') || '';
 let searxngSearchUrl = localStorage.getItem('shadow_searxng_url') || 'http://127.0.0.1/search';
 let searxngSearchPort = localStorage.getItem('shadow_searxng_port') || '8888';
 let accent = localStorage.getItem('shadow_accent') || 'neutral';
-let echoGateLevel = localStorage.getItem('shadow_echo_gate') || 'headphones';
 let proactiveEnabled = localStorage.getItem('shadow_proactive_enabled') !== 'false';
 let proactiveProfile = localStorage.getItem('shadow_proactive_profile') || 'balanced';
 const GEMINI_VOICE_OPTIONS = Object.freeze([
@@ -227,12 +227,6 @@ const GEMINI_VOICE_OPTIONS = Object.freeze([
 const GEMINI_VOICE_NAMES = Object.freeze(GEMINI_VOICE_OPTIONS.map(voice => voice.name));
 const DEFAULT_GEMINI_VOICE = 'Leda';
 let favoriteVoiceNames = [];
-const ECHO_GATE_MULTIPLIERS = {
-  headphones: 0.0,
-  speaker_low: 0.2,
-  speaker_medium: 0.45,
-  speaker_high: 0.8
-};
 const PROACTIVE_PROFILES = {
   quiet: {
     label: 'quiet',
@@ -759,12 +753,12 @@ const inputApiKey = document.getElementById('input-api-key');
 const inputAssistantName = document.getElementById('input-assistant-name');
 const inputUserName = document.getElementById('input-user-name');
 const selectVoice = document.getElementById('select-voice');
+const selectMicDevice = document.getElementById('select-mic-device');
 const btnFavoriteVoice = document.getElementById('btn-favorite-voice');
 const selectAccent = document.getElementById('select-accent');
 const selectModel = document.getElementById('select-model');
 const selectLiveThinkingLevel = document.getElementById('select-live-thinking-level');
 const inputSmartMainRoutingEnabled = document.getElementById('input-smart-main-routing-enabled');
-const selectEchoGate = document.getElementById('select-echo-gate');
 const inputProactiveEnabled = document.getElementById('input-proactive-enabled');
 const selectProactiveProfile = document.getElementById('select-proactive-profile');
 const inputSystemInstruction = document.getElementById('input-system-instruction');
@@ -809,6 +803,8 @@ const updateToastTitle = document.getElementById('update-toast-title');
 const updateToastSubtitle = document.getElementById('update-toast-subtitle');
 const btnUpdateNow = document.getElementById('btn-update-now');
 const btnUpdateLater = document.getElementById('btn-update-later');
+const btnCheckUpdates = document.getElementById('btn-check-updates');
+const updateCheckStatus = document.getElementById('update-check-status');
 
 // Missing-credential prompt popup
 const credentialModal = document.getElementById('credential-modal');

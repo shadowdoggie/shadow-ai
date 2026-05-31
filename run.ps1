@@ -1538,6 +1538,31 @@ try {
                 }
             }
 
+            if ($urlPath -eq "/api/open-url") {
+                if ($request.HttpMethod -eq "OPTIONS") {
+                    Add-ShadowCorsOrigin $response
+                    $response.Headers.Add("Access-Control-Allow-Methods", "POST, OPTIONS")
+                    $response.Headers.Add("Access-Control-Allow-Headers", "Content-Type")
+                    $response.StatusCode = 200; $response.Close(); continue
+                }
+                if ($request.HttpMethod -eq "POST") {
+                    try {
+                        $reader = New-Object System.IO.StreamReader($request.InputStream)
+                        $payload = $reader.ReadToEnd() | ConvertFrom-Json
+                        $openUrl = [string]$payload.url
+                        # Only http(s) so this can never be used to launch arbitrary programs.
+                        if ($openUrl -notmatch '^(?i)https?://') { throw "Only http(s) URLs can be opened." }
+                        Start-Process $openUrl   # ShellExecute -> the user's DEFAULT browser
+                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "success" }) 200
+                    } catch {
+                        Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = $_.Exception.Message }) 200
+                    }
+                    continue
+                }
+                Write-ShadowJsonResponse $response ([PSCustomObject]@{ status = "error"; error = "Method not allowed" }) 405
+                continue
+            }
+
             if ($urlPath -eq "/api/request/cancel") {
                 if ($request.HttpMethod -eq "OPTIONS") {
                     Add-ShadowCorsOrigin $response
@@ -3622,17 +3647,63 @@ if ($chromePath) {
     Write-Host "[App] Starting borderless app window ($([System.IO.Path]::GetFileName($chromePath)))..." -ForegroundColor Green
     $appProfileDir = Join-Path $scriptDir "runtime\profiles\shadow_app"
     if (-not (Test-Path $appProfileDir -PathType Container)) { New-Item -ItemType Directory -Path $appProfileDir -Force | Out-Null }
+    # Disable the browser's "save / update password?" bubble in our dedicated app profile — the API-key
+    # fields are password inputs, which would otherwise trigger it. Set it in the profile's Preferences
+    # (merged so we keep window state etc.), written BOM-less so Chromium accepts it.
+    try {
+        $defDir = Join-Path $appProfileDir "Default"
+        if (-not (Test-Path $defDir)) { New-Item -ItemType Directory -Path $defDir -Force | Out-Null }
+        $prefPath = Join-Path $defDir "Preferences"
+        $prefs = $null
+        if (Test-Path $prefPath) { try { $prefs = Get-Content $prefPath -Raw -ErrorAction Stop | ConvertFrom-Json } catch { $prefs = $null } }
+        if ($null -eq $prefs) { $prefs = [PSCustomObject]@{} }
+        $prefs | Add-Member -NotePropertyName credentials_enable_service -NotePropertyValue $false -Force
+        $prefs | Add-Member -NotePropertyName credentials_enable_autosignin -NotePropertyValue $false -Force
+        if (-not ($prefs.PSObject.Properties.Name -contains 'profile') -or $null -eq $prefs.profile) {
+            $prefs | Add-Member -NotePropertyName profile -NotePropertyValue ([PSCustomObject]@{}) -Force
+        }
+        $prefs.profile | Add-Member -NotePropertyName password_manager_enabled -NotePropertyValue $false -Force
+        $prefs.profile | Add-Member -NotePropertyName password_manager_leak_detection -NotePropertyValue $false -Force
+        # Persistently grant microphone + camera permission for OUR app origin in OUR profile. This
+        # makes getUserMedia never prompt (the borderless window has no UI to grant one) AND, because
+        # the permission is "granted", enumerateDevices() exposes real device names so the Settings
+        # mic picker can list them. Merged so any existing content settings are preserved.
+        $allow = [PSCustomObject]@{ setting = 1 }
+        $mkExc = {
+            $e = [PSCustomObject]@{}
+            $e | Add-Member -NotePropertyName "http://127.0.0.1:$port,*" -NotePropertyValue $allow -Force
+            $e | Add-Member -NotePropertyName "http://localhost:$port,*" -NotePropertyValue $allow -Force
+            $e
+        }
+        if (-not ($prefs.profile.PSObject.Properties.Name -contains 'content_settings') -or $null -eq $prefs.profile.content_settings) {
+            $prefs.profile | Add-Member -NotePropertyName content_settings -NotePropertyValue ([PSCustomObject]@{}) -Force
+        }
+        if (-not ($prefs.profile.content_settings.PSObject.Properties.Name -contains 'exceptions') -or $null -eq $prefs.profile.content_settings.exceptions) {
+            $prefs.profile.content_settings | Add-Member -NotePropertyName exceptions -NotePropertyValue ([PSCustomObject]@{}) -Force
+        }
+        $prefs.profile.content_settings.exceptions | Add-Member -NotePropertyName media_stream_mic -NotePropertyValue (& $mkExc) -Force
+        $prefs.profile.content_settings.exceptions | Add-Member -NotePropertyName media_stream_camera -NotePropertyValue (& $mkExc) -Force
+        [System.IO.File]::WriteAllText($prefPath, ($prefs | ConvertTo-Json -Depth 60), (New-Object System.Text.UTF8Encoding($false)))
+    } catch {}
     $chromeArgs = @(
         "--app=$url",
         "--window-size=960,720",
         "--user-data-dir=$appProfileDir",
         "--no-first-run",
         "--no-default-browser-check",
+        # Auto-grant the mic in OUR borderless app window (no address bar to re-enable a denied prompt).
+        # Scoped to this dedicated profile/origin only — never affects the user's normal browser.
+        # NOTE: --use-fake-ui-for-media-stream was tried here but it prevents the --app window from
+        # opening at all on current Chrome, so the mic permission is instead pre-granted persistently
+        # in the profile Preferences (content_settings.media_stream_mic) below.
+        "--auto-accept-camera-and-microphone-capture",
         "--disable-extensions",
         "--disable-component-extensions-with-background-pages",
+        # No password manager / keychain prompts for our app profile.
+        "--password-store=basic",
         # Stop the browser from auto-lowering the OS microphone input level over time
         # (WebRTC input-volume adjustment). Pairs with autoGainControl:false in 04-audio.js.
-        "--disable-features=WebRtcAllowInputVolumeAdjustment"
+        "--disable-features=WebRtcAllowInputVolumeAdjustment,AutofillServerCommunication"
     )
     $appProcess = Start-Process $chromePath -ArgumentList $chromeArgs -PassThru
 } else {

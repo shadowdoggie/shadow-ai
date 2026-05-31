@@ -417,8 +417,6 @@ describe('turn and transcript helpers', () => {
       MIN_PLAYBACK_BARGE_IN_GATE_MULTIPLIER: 0.18,
       LOCAL_BARGE_IN_PREROLL_GATE_MULTIPLIER: 0.05,
       MIC_LEVEL_THRESHOLD: 0.025,
-      ECHO_GATE_MULTIPLIERS: { headphones: 0 },
-      echoGateLevel: 'headphones',
       isPlaybackActiveForBargeIn: () => true,
       activeLiveBackendCommandIds: new Set(),
       activeLiveToolCallEpochs: new Map(),
@@ -434,7 +432,6 @@ describe('turn and transcript helpers', () => {
       maybeTriggerLocalBargeIn
     } = loadFunctions([
       ['05-live-connection.js', [
-        'getEchoGateMultiplier',
         'getDynamicMicThreshold',
         'getLocalBargeInCandidateThreshold',
         'isLiveWorkActiveForVoiceBargeIn',

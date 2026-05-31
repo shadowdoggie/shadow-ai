@@ -2,7 +2,7 @@
 
 # 🎙️ Shadow AI
 
-### A Windows voice-first AI companion — just talk, and it talks back.
+### A Windows voice-first AI companion — think OpenClaw, but voice-only.
 
 Hands-free, real-time voice. Long-term memory. Web search. Background agents. Your Google account, optionally.
 
@@ -13,6 +13,8 @@ Hands-free, real-time voice. Long-term memory. Web search. Background agents. Yo
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6?logo=windows)](#getting-started)
 
 **[⬇️ Download](https://github.com/shadowdoggie/shadow-ai/releases/latest) · [▶️ Watch the demo](https://youtu.be/oXpQaCJPUO4) · [🛠️ Setup & build](SETUP.md)**
+
+<sub><em>Independent project — not affiliated with, endorsed by, or sponsored by OpenClaw. "OpenClaw" and any related names are trademarks of their respective owners; any reference is nominative (for comparison/description) only.</em></sub>
 
 </div>
 
@@ -73,8 +75,8 @@ your machine**. Gmail/Calendar/Drive/Contacts are optional via an in-app setup w
 > Get-FileHash .\ShadowAI-Setup.exe -Algorithm SHA256
 > ```
 >
-> v1.7.1 `ShadowAI-Setup.exe`:
-> `dee0381a506332e293513ee3fffc8f51482ccd63f4eb21e19e8667e81b36b007`
+> v1.7.2 `ShadowAI-Setup.exe`:
+> `4f586514ece7e83c80a0d2102b86e5e7018ca1bea1864ce93a72777d76c64098`
 
 See **[SETUP.md](SETUP.md)** for full install, developer, and build-from-source steps.
 

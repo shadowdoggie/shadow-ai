@@ -101,6 +101,43 @@ function showUpdateToast(data) {
   updateToast.classList.remove('hidden');
 }
 
+// Manual "Check for updates" (Settings button). Unlike the silent launch check, this always
+// runs (even with auto-check off), gives explicit feedback, and overrides a prior "Later"
+// dismissal so an available update re-surfaces when the user deliberately asks.
+async function manualCheckForUpdate() {
+  if (!btnCheckUpdates) return;
+  const setStatus = (msg, isError) => {
+    if (!updateCheckStatus) return;
+    updateCheckStatus.textContent = msg || '';
+    updateCheckStatus.style.color = isError ? '#ff8a80' : '';
+  };
+  btnCheckUpdates.disabled = true;
+  setStatus('Checking…', false);
+  try {
+    const res = await fetchLocalApiWithTimeout('/api/update-check', {}, LOCAL_API_TIMEOUT_MS);
+    if (!res.ok) { setStatus('Could not check for updates right now.', true); return; }
+    const data = await readBootResponseJsonWithTimeout(res, LOCAL_API_TIMEOUT_MS);
+    if (!data || data.status !== 'success') {
+      setStatus((data && data.error) ? data.error : 'Could not reach GitHub to check for updates.', true);
+      return;
+    }
+    const current = String(data.current || '').trim();
+    const latest = String(data.latest || '').trim();
+    if (data.update_available && latest) {
+      setStatus('Update available: ' + latest, false);
+      updateDismissedVersion = '';
+      try { localStorage.removeItem('shadow_update_dismissed_version'); } catch (e) {}
+      showUpdateToast(data);
+    } else {
+      setStatus(current ? ("You're on the latest version (" + current + ').') : "You're on the latest version.", false);
+    }
+  } catch (e) {
+    setStatus('Could not reach GitHub to check for updates.', true);
+  } finally {
+    btnCheckUpdates.disabled = false;
+  }
+}
+
 // ===== Onboarding wizard =====
 let onboardingCurrentStep = 1;
 
@@ -427,9 +464,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (selectLiveThinkingLevel) {
     selectLiveThinkingLevel.value = liveThinkingLevel;
   }
-  if (selectEchoGate) {
-    selectEchoGate.value = echoGateLevel;
-  }
   normalizeProactiveProfile();
   syncProactiveControls();
 
@@ -682,9 +716,106 @@ window.addEventListener('DOMContentLoaded', async () => {
     onboardingModal.classList.remove('hidden');
   }
 
+  // Open external links in the user's DEFAULT browser. The app runs in a borderless Chromium app
+  // window, where target=_blank links would otherwise spawn a stray browser window; route them
+  // through the backend's ShellExecute instead.
+  window.openExternalUrl = function (url) {
+    if (!/^https?:\/\//i.test(url || '')) return false;
+    fetchLocalApiWithTimeout('/api/open-url', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: url }) }, 8000).catch(function () {});
+    return true;
+  };
+  document.addEventListener('click', function (ev) {
+    const a = ev.target && ev.target.closest ? ev.target.closest('a[target="_blank"]') : null;
+    if (!a) return;
+    const href = a.getAttribute('href') || '';
+    if (/^https?:\/\//i.test(href)) { ev.preventDefault(); window.openExternalUrl(href); }
+  }, true);
+
+  // Remember real {deviceId: label} pairs whenever we manage to read them (after priming or during a
+  // live call), so the Settings picker can show real names even later when no stream is active and the
+  // browser has re-hidden labels.
+  function cacheMicLabels(mics) {
+    try {
+      const map = JSON.parse(localStorage.getItem('shadow_mic_labels') || '{}');
+      let changed = false;
+      (mics || []).forEach(function (d) {
+        if (d && d.deviceId && d.label && map[d.deviceId] !== d.label) { map[d.deviceId] = d.label; changed = true; }
+      });
+      if (changed) localStorage.setItem('shadow_mic_labels', JSON.stringify(map));
+    } catch (e) {}
+  }
+  function getCachedMicLabel(deviceId) {
+    try { return (JSON.parse(localStorage.getItem('shadow_mic_labels') || '{}'))[deviceId] || ''; } catch (e) { return ''; }
+  }
+  window.cacheMicLabels = cacheMicLabels;
+
+  // Microphone device picker: list input devices, persist the choice, use it in getUserMedia.
+  // Browsers hide real device NAMES + the full device list until the page has been granted mic access.
+  // When prime=true (e.g. opening Settings), briefly open a mic stream (auto-accepted in the app window)
+  // to unlock the real names + every device, then stop it immediately.
+  async function populateMicDevices(prime) {
+    if (!selectMicDevice || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    try {
+      let devices = await navigator.mediaDevices.enumerateDevices();
+      let mics = devices.filter(function (d) { return d.kind === 'audioinput'; });
+      const labelsHidden = mics.length <= 1 || mics.every(function (d) { return !d.label; });
+      if (prime && labelsHidden && navigator.mediaDevices.getUserMedia) {
+        try {
+          // Open a real-device stream to unlock labels + the full device list. Race a timeout so a
+          // stuck/blocked permission can never hang Settings. Enumerate WHILE the stream is alive
+          // (an auto-accept grant can re-hide labels the instant the track stops), then stop it.
+          const tmp = await Promise.race([
+            navigator.mediaDevices.getUserMedia({ audio: true }),
+            new Promise(function (_, rej) { setTimeout(function () { rej(new Error('mic-prime-timeout')); }, 4000); })
+          ]);
+          devices = await navigator.mediaDevices.enumerateDevices();
+          mics = devices.filter(function (d) { return d.kind === 'audioinput'; });
+          if (tmp && tmp.getTracks) tmp.getTracks().forEach(function (t) { t.stop(); });
+        } catch (e) {}
+      }
+      cacheMicLabels(mics);
+      // Drop Windows' "default"/"communications" alias entries — we already offer "Default
+      // microphone", and the aliases just duplicate a real device under a generic name.
+      const realMics = mics.filter(function (d) {
+        return d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications';
+      });
+      const listMics = realMics.length ? realMics : mics;
+      selectMicDevice.innerHTML = '<option value="">Default microphone</option>';
+      listMics.forEach(function (d, i) {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        // Prefer the live label, then a previously-cached real name, then a generic fallback.
+        opt.textContent = d.label || getCachedMicLabel(d.deviceId) || ('Microphone ' + (i + 1));
+        selectMicDevice.appendChild(opt);
+      });
+      // Keep the saved choice if it's still present; otherwise fall back to Default.
+      const has = Array.prototype.some.call(selectMicDevice.options, function (o) { return o.value === (selectedMicDeviceId || ''); });
+      selectMicDevice.value = has ? (selectedMicDeviceId || '') : '';
+    } catch (e) {}
+  }
+  window.populateMicDevices = populateMicDevices;
+  if (selectMicDevice) {
+    selectMicDevice.addEventListener('change', function () {
+      selectedMicDeviceId = selectMicDevice.value || '';
+      try { localStorage.setItem('shadow_mic_device', selectedMicDeviceId); } catch (e) {}
+      // If a call is in progress, switch the live mic immediately instead of waiting for reconnect.
+      if (typeof isConnected !== 'undefined' && isConnected &&
+          typeof audioRecorder !== 'undefined' && audioRecorder &&
+          typeof audioRecorder.switchDevice === 'function') {
+        audioRecorder.switchDevice();
+      }
+    });
+  }
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    try { navigator.mediaDevices.addEventListener('devicechange', populateMicDevices); } catch (e) {}
+  }
+  populateMicDevices();
+
   // Setup Event Listeners
   btnSettings.addEventListener('click', () => {
     inputApiKey.value = apiKey;
+    populateMicDevices(true);
+    if (updateCheckStatus) updateCheckStatus.textContent = '';
     if (inputUserName) inputUserName.value = getUserName();
     selectVoice.value = voiceName;
     selectAccent.value = accent;
@@ -692,9 +823,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (selectLiveThinkingLevel) selectLiveThinkingLevel.value = liveThinkingLevel;
     if (inputSmartMainRoutingEnabled) inputSmartMainRoutingEnabled.checked = smartMainRoutingEnabled;
     if (inputAutoUpdateCheck) inputAutoUpdateCheck.checked = autoUpdateCheckEnabled;
-    if (selectEchoGate) {
-      selectEchoGate.value = echoGateLevel;
-    }
     selectSubagentProvider.value = subagentProvider;
     if (subagentProvider === 'gemini') selectSubagentModelGemini.value = subagentModel || 'models/gemini-3.1-flash-lite';
     if (subagentProvider === OPENAI_CODEX_PROVIDER) selectSubagentModelOpenaiCodex.value = subagentModel || 'gpt-5.5';
@@ -752,6 +880,9 @@ window.addEventListener('DOMContentLoaded', async () => {
       }
     });
   }
+  if (btnCheckUpdates) {
+    btnCheckUpdates.addEventListener('click', () => { manualCheckForUpdate(); });
+  }
 
   if (selectVoice) {
     selectVoice.addEventListener('change', syncFavoriteVoiceButton);
@@ -788,9 +919,6 @@ window.addEventListener('DOMContentLoaded', async () => {
       if (inputSmartMainRoutingEnabled) {
         smartMainRoutingEnabled = inputSmartMainRoutingEnabled.checked;
       }
-      if (selectEchoGate) {
-        echoGateLevel = selectEchoGate.value;
-      }
       const oldProactiveEnabled = proactiveEnabled;
       if (inputProactiveEnabled) {
         proactiveEnabled = inputProactiveEnabled.checked;
@@ -821,7 +949,6 @@ window.addEventListener('DOMContentLoaded', async () => {
         localStorage.setItem('shadow_auto_update_check', autoUpdateCheckEnabled ? 'true' : 'false');
       }
       localStorage.setItem('shadow_accent', accent);
-      localStorage.setItem('shadow_echo_gate', echoGateLevel);
       localStorage.setItem('shadow_proactive_enabled', proactiveEnabled ? 'true' : 'false');
       localStorage.setItem('shadow_proactive_profile', proactiveProfile);
       syncProactiveControls();
@@ -1412,7 +1539,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         }
         const data = await readBootResponseJsonWithTimeout(res, GOOGLE_AUTH_API_TIMEOUT_MS);
         if (data.status === 'success' && data.url) {
-          window.open(data.url, '_blank');
+          window.openExternalUrl(data.url);
 
           let pollCount = 0;
           const interval = setInterval(async () => {

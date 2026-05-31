@@ -1299,7 +1299,7 @@ async function connect() {
               },
               {
                 name: 'update_shadow_settings',
-                description: 'Updates only voice-control-safe settings: assistant name, speaking accent, echo gate, and SearXNG search. Voice presets, favorite voices, main model, main Live reasoning, subagent provider/model/reasoning, and proactive mode/profile/frequency are locked from voice control.',
+                description: 'Updates only voice-control-safe settings: assistant name, speaking accent, and SearXNG search. Voice presets, favorite voices, main model, main Live reasoning, subagent provider/model/reasoning, and proactive mode/profile/frequency are locked from voice control.',
                 parameters: {
                   type: 'OBJECT',
                   properties: {
@@ -1310,10 +1310,6 @@ async function connect() {
                     accent: {
                       type: 'STRING',
                       description: 'Speaking accent. Allowed: neutral, southern_american, brooklyn_american, australian, british, russian, french, latina_latino.'
-                    },
-                    echo_gate: {
-                      type: 'STRING',
-                      description: 'Echo gate level. Allowed: headphones, speaker_low, speaker_medium, speaker_high.'
                     },
                     searxng_url: {
                       type: 'STRING',
@@ -2111,7 +2107,7 @@ async function connect() {
         } catch (err) {
           console.error('Failed to start recorder or player:', err);
           connectionInProgress = false;
-          disconnect('Failed to access microphone. Make sure permission is granted.');
+          disconnect('Could not access the microphone. Check Windows Settings → Privacy & security → Microphone (make sure microphone access + desktop-app access are on) and that a mic is connected, then reconnect.');
         }
         return;
       }
@@ -2815,15 +2811,11 @@ function clearToolResponseFollowupPending() {
   toolResponseFollowupTimer = null;
 }
 
-function getEchoGateMultiplier() {
-  return ECHO_GATE_MULTIPLIERS[echoGateLevel] !== undefined ? ECHO_GATE_MULTIPLIERS[echoGateLevel] : 0.0;
-}
-
 function getDynamicMicThreshold(playVolume = 0, options = {}) {
   const { protectPlayback = false } = options;
-  const multiplier = protectPlayback
-    ? Math.max(getEchoGateMultiplier(), MIN_PLAYBACK_BARGE_IN_GATE_MULTIPLIER)
-    : getEchoGateMultiplier();
+  // No mic-vs-playback echo gating during normal listening; only protect active playback from
+  // self-triggered barge-in using the minimum playback gate.
+  const multiplier = protectPlayback ? MIN_PLAYBACK_BARGE_IN_GATE_MULTIPLIER : 0.0;
   return MIC_LEVEL_THRESHOLD + (Math.max(0, playVolume || 0) * multiplier);
 }
 

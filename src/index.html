@@ -142,6 +142,15 @@
           <span class="field-hint">You can get an API key from the <a href="https://aistudio.google.com/" target="_blank">Google AI Studio</a>.</span>
         </div>
 
+        <!-- Microphone -->
+        <div class="form-group">
+          <label for="select-mic-device">Microphone</label>
+          <select id="select-mic-device">
+            <option value="">Default microphone</option>
+          </select>
+          <span class="field-hint" style="display:block;margin-top:4px;">Which mic Shadow listens through. If names show as "Microphone 1/2", connect once to grant mic access, then reopen Settings.</span>
+        </div>
+
         <!-- Voice Selection -->
         <div class="form-group">
           <label for="select-voice">Voice</label>
@@ -241,18 +250,6 @@
             <span>Refine subagent prompts and steering with the selected subagent model</span>
           </label>
           <span class="field-hint" style="display:block;margin-top:4px;">Gemini stays direct for normal chat. When starting or steering a background subagent, the selected subagent provider/model rewrites the task first.</span>
-        </div>
-
-        <!-- Echo Gate Selection -->
-        <div class="form-group">
-          <label for="select-echo-gate">Echo Gate Level</label>
-          <select id="select-echo-gate">
-            <option value="headphones" selected>Headphones Mode (No Echo Gating)</option>
-            <option value="speaker_low">Speaker Mode (Low)</option>
-            <option value="speaker_medium">Speaker Mode (Medium)</option>
-            <option value="speaker_high">Speaker Mode (High)</option>
-          </select>
-          <span class="field-hint" style="display:block;margin-top:4px;">Select Headphones Mode for no gating, or Speaker Mode to gate speaker output.</span>
         </div>
 
         <!-- Proactive Mode Selection -->
@@ -433,6 +430,10 @@
             <span>Check for updates on launch</span>
           </label>
           <span class="field-hint" style="display:block;margin-top:4px;">When a newer release is available, Shadow shows a one-time notice with a link to download the installer. Shadow never updates itself without your click.</span>
+          <div style="display:flex; align-items:center; gap:10px; margin-top:10px;">
+            <button id="btn-check-updates" class="secondary-button" type="button">Check for updates</button>
+            <span id="update-check-status" class="field-hint" style="margin:0;"></span>
+          </div>
         </div>
 
         <!-- System Instruction / Personality Prompt -->
